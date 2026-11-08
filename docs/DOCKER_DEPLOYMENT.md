@@ -22,7 +22,19 @@ For a different port set `SYMPORT_HTTP_PORT`; the published/container port, comm
 healthcheck change together so Host/Origin validation continues to match.
 `tools/install.sh --no-build` starts a previously built image.
 
-Remote Linux server: forward the **same port** over SSH, e.g.
+Home NAS on a trusted LAN (UGREEN, Synology, Portainer): **Home LAN mode is the default of `compose.deploy.yaml`**; instead of
+an SSH tunnel set `SYMPORT_BIND=<NAS LAN IP>` and your own `SYMPORT_ADMIN_PASSWORD` (`SYMPORT_ACCESS_MODE=lan` is preset;
+`compose.yaml`/`tools/install.sh` stay localhost-only)
+(or `SYMPORT_ADMIN_PASSWORD_FILE` / `SYMPORT_ADMIN_PASSWORD_HASH`). SymPort then serves a login screen at
+`http://<nas-ip>:8765/`, accepts only that exact Host/Origin, requires a session (HttpOnly, SameSite=Strict cookie, CSRF
+token, idle/absolute expiry, login rate limit) for every API, media and file route, and **refuses to start** on a missing,
+weak or default password, on `SYMPORT_BIND=0.0.0.0` without an exact `SYMPORT_LAN_HOST`, or on a loopback bind. Plain HTTP
+does not protect the password, cookie or phone data from someone sniffing the network: use it only on a trusted network, or
+put an HTTPS reverse proxy in front (`SYMPORT_PUBLIC_ORIGIN`). Never forward the port on your router.
+Step-by-step guide, recovery and switching back: [DEPLOY_PORTAINER.md](DEPLOY_PORTAINER.md#4-ugreen--portainer-home-lan-без-ssh-и-прокси).
+Windows Bridge pairing keeps its own short-lived credentials; `/api/bridge-relay/*` never bypasses the login for other routes.
+
+Remote Linux server without Home LAN mode: forward the **same port** over SSH, e.g.
 `ssh -L 8765:127.0.0.1:8765 user@server`. Open localhost in your browser. Workbench
 and phone-control APIs are not intended for direct public exposure or multi-user hosting.
 MGO's agent has no published ports and requires a backend-only bearer secret.
@@ -153,7 +165,7 @@ mounts) → Python dependencies, read from `pyproject.toml` by `tools/docker/req
 Skin Compiler and `bmconv` → frontend → the application code. Editing a Python or TypeScript file therefore
 rebuilds only the last layers. BuildKit is required (`docker buildx` or Docker 23+).
 
-The image runs as user `10001`, has a built-in `HEALTHCHECK` (`/api/state`), and carries OCI labels; pass
+The image runs as user `10001`, has a built-in `HEALTHCHECK` (`/healthz`, the only anonymous endpoint besides the login screen), and carries OCI labels; pass
 `--build-arg VERSION=… --build-arg REVISION=…` (Compose: `SYMPORT_VERSION`, `SYMPORT_REVISION`) to stamp them.
 Compose limits container logs to 3 × 10 MiB. Behind a corporate proxy, pass the CA bundle with
 `--secret id=proxy_ca,src=/path/ca.pem`. Proxmox: [DEPLOY_PROXMOX.md](DEPLOY_PROXMOX.md).

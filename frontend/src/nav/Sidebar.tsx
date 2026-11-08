@@ -4,6 +4,7 @@ import {
   Code2,
   Languages,
   Layers,
+  LogOut,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
@@ -14,8 +15,9 @@ import {
   User,
   X,
 } from 'lucide-react';
-import { DARK_THEME_ENABLED, usePreferences } from '../state/app';
+import { DARK_THEME_ENABLED, useApi, usePreferences } from '../state/app';
 import { useDevices } from '../api/queries';
+import { authMode } from '../api/client';
 import { findGroup, visibleGroups, type NavItem } from './routes';
 
 const base = import.meta.env.BASE_URL;
@@ -380,6 +382,8 @@ function SidebarFooter({
   tip: TipFactory;
 }) {
   const { t, language, theme, setLanguage, setTheme } = usePreferences();
+  const api = useApi();
+  const lan = authMode() === 'lan';
   const [panel, setPanel] = useState(false);
   const panelId = useId();
   const ThemeIcon = theme === 'dark' ? Moon : theme === 'light' ? Sun : SunMoon;
@@ -455,6 +459,17 @@ function SidebarFooter({
         >
           <Settings size={18} aria-hidden="true" />
         </button>
+        {lan && (
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={t('Sign out', 'Выйти')}
+            onClick={() => void api.logout()}
+            {...tip(t('Sign out', 'Выйти'))}
+          >
+            <LogOut size={18} aria-hidden="true" />
+          </button>
+        )}
         {DARK_THEME_ENABLED && (
           <button
             type="button"

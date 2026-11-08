@@ -17,8 +17,40 @@ export class ApiError extends Error {
     super(message);
   }
 }
+/** 'lan' when the server runs in Home LAN mode and requires a login (set by the server in the page). */
+export function authMode(): 'lan' | 'local' {
+  const value = document
+    .querySelector<HTMLMetaElement>('meta[name="symport-auth"]')
+    ?.content.trim();
+  return value === 'lan' ? 'lan' : 'local';
+}
+/** The session expired or was revoked: reload once so the server shows the login screen. */
+function signedOut() {
+  try {
+    const last = Number(sessionStorage.getItem('symport-signed-out') ?? '0');
+    if (Date.now() - last < 5000) return;
+    sessionStorage.setItem('symport-signed-out', String(Date.now()));
+  } catch {
+    /* storage may be blocked; a single reload is still fine */
+  }
+  location.reload();
+}
 export class ApiClient {
   constructor(private readonly token: () => string) {}
+  /** Ends the Home LAN session on the server, then shows the login screen. */
+  async logout(): Promise<void> {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'X-Symport-Token': this.token() },
+        body: '{}',
+      });
+    } finally {
+      location.replace('/');
+    }
+  }
   get styleNonce() {
     return this.token();
   }
@@ -72,6 +104,7 @@ export class ApiClient {
   }
   private async decode<T>(response: Response, schema: z.ZodType<T>): Promise<T> {
     const raw: unknown = await response.json();
+    if (response.status === 401 && authMode() === 'lan') signedOut();
     if (!response.ok) {
       const error = z.object({ error: z.string() }).safeParse(raw);
       throw new ApiError(

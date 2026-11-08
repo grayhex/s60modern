@@ -27,3 +27,4 @@ symport/react_assets/
 frontend/tsconfig.tsbuildinfo
 frontend/coverage/
 frontend/public/
+tools/s60/.build.lock

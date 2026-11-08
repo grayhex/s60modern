@@ -101,7 +101,7 @@ echo "==> SymPort"
 run pct exec "$CTID" -- bash -ec "
   install -d /opt/symport && cd /opt/symport
   curl -fsSL '$COMPOSE_URL' -o compose.yaml
-  printf 'SYMPORT_IMAGE=%s\n' '$IMAGE' > .env
+  printf 'SYMPORT_IMAGE=%s\nSYMPORT_ACCESS_MODE=localhost\nSYMPORT_BIND=127.0.0.1\n' '$IMAGE' > .env
   docker compose up -d
 "
 
@@ -112,6 +112,8 @@ SymPort is starting in container $CTID. It listens on the container's loopback o
 Open it through an SSH tunnel from your computer:
   ssh -L 8765:127.0.0.1:8765 root@<container-ip>      # then browse to http://127.0.0.1:8765
 (set a root password or add your SSH key first: pct enter $CTID)
+For Home LAN access instead, edit /opt/symport/.env: SYMPORT_ACCESS_MODE=lan, SYMPORT_BIND=<container LAN IP>,
+SYMPORT_ADMIN_PASSWORD=<your own secret>, then 'docker compose up -d' (docs/DEPLOY_PORTAINER.md).
 
 Update later:   pct exec $CTID -- bash -c 'cd /opt/symport && docker compose pull && docker compose up -d'
 Logs:           pct exec $CTID -- docker compose -f /opt/symport/compose.yaml logs -f

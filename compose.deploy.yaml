@@ -4,9 +4,14 @@
 #   CLI:       docker compose -f compose.deploy.yaml up -d
 # Guide: docs/DEPLOY_PORTAINER.md
 #
-# The UI is NOT for direct LAN/Internet exposure. By default the port is bound to the host's loopback
-# (use an SSH tunnel, or an authenticated HTTPS reverse proxy plus SYMPORT_PUBLIC_ORIGIN). Opening
-# http://<nas-ip>:8765 in a browser is rejected by design (Host/Origin validation).
+# Access mode. Home LAN is the DEFAULT of this file (priority scenario: a home NAS such as UGREEN). Set in the stack:
+#   SYMPORT_BIND=<NAS LAN IP>            e.g. 192.168.1.5 (the exact address you open in the browser)
+#   SYMPORT_ADMIN_PASSWORD=<own secret>  at least 12 characters; there is no default password
+# SymPort then shows its own login screen at http://<nas-ip>:8765. Without both values the container does NOT
+# start and the log says what is missing (it never serves an unprotected API). Plain HTTP: trusted home network
+# only; never forward this port on your router.
+# Localhost instead (SSH tunnel / authenticated HTTPS proxy): SYMPORT_ACCESS_MODE=localhost, SYMPORT_BIND=127.0.0.1.
+
 name: symport
 
 services:
@@ -25,12 +30,24 @@ services:
       - mgo-symbian-auth:/symbian-auth:ro
       # Optional phone/card folder (read-only recommended), then set SYMPORT_DEVICE_ROOTS='{"phone":"/phone"}':
       # - /volume1/phone:/phone:ro
+      # Optional: keep the admin password in a file instead of an environment variable, then set
+      # SYMPORT_ADMIN_PASSWORD_FILE=/run/secrets/symport-admin-password
+      # - /volume1/docker/symport/admin-password:/run/secrets/symport-admin-password:ro
     environment:
       SYMPORT_FRONTEND: ${SYMPORT_FRONTEND:-react}
       # Interface mode of a fresh browser: user (default) or developer. Each user's own choice is remembered.
       SYMPORT_UI_MODE: ${SYMPORT_UI_MODE:-}
       SYMPORT_HTTP_PORT: ${SYMPORT_HTTP_PORT:-8765}
       SYMPORT_PUBLIC_ORIGIN: ${SYMPORT_PUBLIC_ORIGIN:-}
+      # Home LAN is the default mode; set SYMPORT_ACCESS_MODE=localhost for the SSH/proxy-only setup. Validated at startup (fail closed).
+      SYMPORT_ACCESS_MODE: ${SYMPORT_ACCESS_MODE:-lan}
+      SYMPORT_BIND: ${SYMPORT_BIND:-127.0.0.1}
+      SYMPORT_LAN_HOST: ${SYMPORT_LAN_HOST:-}
+      SYMPORT_ADMIN_PASSWORD: ${SYMPORT_ADMIN_PASSWORD:-}
+      SYMPORT_ADMIN_PASSWORD_HASH: ${SYMPORT_ADMIN_PASSWORD_HASH:-}
+      SYMPORT_ADMIN_PASSWORD_FILE: ${SYMPORT_ADMIN_PASSWORD_FILE:-}
+      SYMPORT_SESSION_IDLE_MINUTES: ${SYMPORT_SESSION_IDLE_MINUTES:-}
+      SYMPORT_SESSION_MAX_MINUTES: ${SYMPORT_SESSION_MAX_MINUTES:-}
       SYMPORT_CONNECTIONS_FILE: ${SYMPORT_CONNECTIONS_FILE:-}
       SYMPORT_MGO_URL: http://mgo-symbian:8766
       SYMPORT_MGO_TOKEN_FILE: /symbian-auth/agent-token
@@ -50,7 +67,7 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
     healthcheck:
-      test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('SYMPORT_HTTP_PORT','8765')+'/api/state', timeout=3).read()"]
+      test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('SYMPORT_HTTP_PORT','8765')+'/healthz', timeout=3).read()"]
       interval: 30s
       timeout: 5s
       retries: 3

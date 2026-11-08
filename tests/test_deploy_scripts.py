@@ -36,7 +36,8 @@ def test_dry_run_builds_an_unprivileged_container_with_docker_features():
 
 def test_nothing_is_published_beyond_the_container_loopback():
     out = dry_run().stdout
-    assert "0.0.0.0" not in out and "SYMPORT_BIND" not in out
+    assert "0.0.0.0" not in out
+    assert "SYMPORT_ACCESS_MODE=localhost" in out and "SYMPORT_BIND=127.0.0.1" in out, "the script stays loopback-only"
     assert "127.0.0.1:8765" in out
 
 

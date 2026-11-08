@@ -139,6 +139,8 @@ jobs:
             REVISION=${{ github.sha }}
           cache-from: type=gha,scope=ci-image
           cache-to: type=gha,mode=max,scope=ci-image
+      - name: Home LAN mode (fail-closed configuration, login, strict Host)
+        run: tools/ci/lan_smoke.sh e52modern-workbench:ci
       - name: Launch workbench and check HTTP API
         run: |
           docker run -d --name e52modern-ui -p 127.0.0.1:8765:8765 e52modern-workbench:ci
