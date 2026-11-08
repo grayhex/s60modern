@@ -1,4 +1,5 @@
 """Regression tests for the existing build pipeline (needs g++; builds skc/bmconv)."""
+import fcntl
 import json
 import shutil
 import subprocess
@@ -15,8 +16,13 @@ pytestmark = pytest.mark.skipif(shutil.which("g++") is None, reason="g++ require
 @pytest.fixture(scope="module")
 def tools():
     skc, bm = REPO / "tools" / "s60" / "bin" / "skc", REPO / "tools" / "s60" / "bin" / "bmconv"
-    if not (skc.exists() and bm.exists()):
-        subprocess.run(["bash", str(REPO / "tools" / "s60" / "build.sh")], check=True, capture_output=True)
+    # build.sh recreates a shared scratch directory, so two pytest-xdist workers building at once break each other.
+    # Serialise the build and re-check under the lock: the worker that waited finds the tools already built.
+    lock = REPO / "tools" / "s60" / ".build.lock"
+    with lock.open("w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        if not (skc.exists() and bm.exists()):
+            subprocess.run(["bash", str(REPO / "tools" / "s60" / "build.sh")], check=True, capture_output=True)
     return skc, bm
 
 
