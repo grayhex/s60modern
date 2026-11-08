@@ -22,8 +22,9 @@ For a different port set `SYMPORT_HTTP_PORT`; the published/container port, comm
 healthcheck change together so Host/Origin validation continues to match.
 `tools/install.sh --no-build` starts a previously built image.
 
-Home NAS on a trusted LAN (UGREEN, Synology, Portainer): opt in to **Home LAN mode** instead of an SSH tunnel by
-setting `SYMPORT_ACCESS_MODE=lan`, `SYMPORT_BIND=<NAS LAN IP>` and your own `SYMPORT_ADMIN_PASSWORD`
+Home NAS on a trusted LAN (UGREEN, Synology, Portainer): **Home LAN mode is the default of `compose.deploy.yaml`**; instead of
+an SSH tunnel set `SYMPORT_BIND=<NAS LAN IP>` and your own `SYMPORT_ADMIN_PASSWORD` (`SYMPORT_ACCESS_MODE=lan` is preset;
+`compose.yaml`/`tools/install.sh` stay localhost-only)
 (or `SYMPORT_ADMIN_PASSWORD_FILE` / `SYMPORT_ADMIN_PASSWORD_HASH`). SymPort then serves a login screen at
 `http://<nas-ip>:8765/`, accepts only that exact Host/Origin, requires a session (HttpOnly, SameSite=Strict cookie, CSRF
 token, idle/absolute expiry, login rate limit) for every API, media and file route, and **refuses to start** on a missing,

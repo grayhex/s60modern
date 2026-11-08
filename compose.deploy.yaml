@@ -4,12 +4,13 @@
 #   CLI:       docker compose -f compose.deploy.yaml up -d
 # Guide: docs/DEPLOY_PORTAINER.md
 #
-# Two supported access modes (docs/DEPLOY_PORTAINER.md):
-#   Localhost (default)  The port is bound to the host's loopback; reach it with an SSH tunnel or an authenticated HTTPS
-#                        reverse proxy (+ SYMPORT_PUBLIC_ORIGIN). http://<nas-ip>:8765 is rejected on purpose.
-#   Home LAN (opt-in)    SYMPORT_ACCESS_MODE=lan + SYMPORT_BIND=<NAS LAN IP> + SYMPORT_ADMIN_PASSWORD=<your own secret>.
-#                        SymPort then shows its own login screen at http://<nas-ip>:8765. It refuses to start if any of
-#                        the three is missing or unsafe. Never forward this port on your router.
+# Access mode. Home LAN is the DEFAULT of this file (priority scenario: a home NAS such as UGREEN). Set in the stack:
+#   SYMPORT_BIND=<NAS LAN IP>            e.g. 192.168.1.5 (the exact address you open in the browser)
+#   SYMPORT_ADMIN_PASSWORD=<own secret>  at least 12 characters; there is no default password
+# SymPort then shows its own login screen at http://<nas-ip>:8765. Without both values the container does NOT
+# start and the log says what is missing (it never serves an unprotected API). Plain HTTP: trusted home network
+# only; never forward this port on your router.
+# Localhost instead (SSH tunnel / authenticated HTTPS proxy): SYMPORT_ACCESS_MODE=localhost, SYMPORT_BIND=127.0.0.1.
 
 name: symport
 
@@ -38,8 +39,8 @@ services:
       SYMPORT_UI_MODE: ${SYMPORT_UI_MODE:-}
       SYMPORT_HTTP_PORT: ${SYMPORT_HTTP_PORT:-8765}
       SYMPORT_PUBLIC_ORIGIN: ${SYMPORT_PUBLIC_ORIGIN:-}
-      # Home LAN mode (opt-in). Leave empty for the default Localhost mode. Validated at startup (fail closed).
-      SYMPORT_ACCESS_MODE: ${SYMPORT_ACCESS_MODE:-localhost}
+      # Home LAN is the default mode; set SYMPORT_ACCESS_MODE=localhost for the SSH/proxy-only setup. Validated at startup (fail closed).
+      SYMPORT_ACCESS_MODE: ${SYMPORT_ACCESS_MODE:-lan}
       SYMPORT_BIND: ${SYMPORT_BIND:-127.0.0.1}
       SYMPORT_LAN_HOST: ${SYMPORT_LAN_HOST:-}
       SYMPORT_ADMIN_PASSWORD: ${SYMPORT_ADMIN_PASSWORD:-}

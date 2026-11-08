@@ -36,7 +36,7 @@ bash create-lxc.sh                      # создать и запустить
 3. Ставит Docker Engine и Compose из репозитория Docker.
 4. Кладёт `compose.deploy.yaml` в `/opt/symport` и запускает `docker compose up -d`.
 
-Порт слушает только **loopback контейнера** (`127.0.0.1:8765`): ничего не открыто в локальную сеть.
+Скрипт записывает в `/opt/symport/.env` `SYMPORT_ACCESS_MODE=localhost`, поэтому порт слушает только **loopback контейнера** (`127.0.0.1:8765`): ничего не открыто в локальную сеть.
 
 ### Открыть интерфейс
 
@@ -84,3 +84,6 @@ pct exec <CTID> -- docker compose -f /opt/symport/compose.yaml logs -f          
 контейнер, `nesting`/`keyctl`, отсутствие открытых портов). Сам образ собирается и публикуется CI. Запуск на
 конкретном узле Proxmox зависит от версии PVE и хранилища — при расхождении выводите команды через `--dry-run`
 и повторяйте шаги вручную.
+
+
+**Home LAN вместо SSH-туннеля.** В `/opt/symport/.env` задайте `SYMPORT_ACCESS_MODE=lan`, `SYMPORT_BIND=<IP контейнера>` и свой `SYMPORT_ADMIN_PASSWORD`, затем `docker compose up -d`: появится экран входа на `http://<IP>:8765/` (см. [DEPLOY_PORTAINER.md](DEPLOY_PORTAINER.md#4-ugreen--portainer-home-lan-без-ssh-и-прокси)).

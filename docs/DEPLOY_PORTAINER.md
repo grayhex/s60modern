@@ -42,15 +42,15 @@ docker compose -f compose.deploy.yaml ps        # healthy через ~20 с
 
 ## 3. Два режима доступа
 
-| | **Localhost** (по умолчанию) | **Home LAN** (включается явно) |
+| | **Localhost** | **Home LAN** (по умолчанию в `compose.deploy.yaml`) |
 |---|---|---|
 | Адрес | `http://127.0.0.1:8765` на самом хосте | `http://<IP-NAS>:8765` с другого компьютера |
 | Вход | SSH-туннель или HTTPS-прокси с аутентификацией | встроенный экран входа (пароль администратора) |
 | Порт на хосте | только loopback | один конкретный адрес NAS из `SYMPORT_BIND` |
-| Что нужно задать | ничего | `SYMPORT_ACCESS_MODE=lan`, `SYMPORT_BIND`, `SYMPORT_ADMIN_PASSWORD` |
+| Что нужно задать | `SYMPORT_ACCESS_MODE=localhost`, `SYMPORT_BIND=127.0.0.1` | `SYMPORT_BIND=<IP NAS>`, `SYMPORT_ADMIN_PASSWORD` (режим `lan` уже включён по умолчанию) |
 
-**Localhost.** Сервер принимает только Host `127.0.0.1:<порт>` / `localhost:<порт>` либо точный HTTPS-адрес из
-`SYMPORT_PUBLIC_ORIGIN`. Поэтому `http://IP-NAS:8765` без включения Home LAN **отклоняется (403, Host not allowed)** — это
+**Localhost** (`SYMPORT_ACCESS_MODE=localhost`, `SYMPORT_BIND=127.0.0.1`). Сервер принимает только Host `127.0.0.1:<порт>` / `localhost:<порт>` либо точный HTTPS-адрес из
+`SYMPORT_PUBLIC_ORIGIN`. Поэтому `http://IP-NAS:8765` в этом режиме **отклоняется (403, Host not allowed)** — это
 защита, а не ошибка:
 
 * **SSH-туннель:** `ssh -L 8765:127.0.0.1:8765 user@nas`, затем `http://127.0.0.1:8765` на своём компьютере.
@@ -61,14 +61,13 @@ docker compose -f compose.deploy.yaml ps        # healthy через ~20 с
 
 ## 4. UGREEN / Portainer: Home LAN без SSH и прокси
 
-Для домашнего NAS: открыть SymPort по IP из локальной сети и войти паролем.
+Для домашнего NAS: открыть SymPort по IP из локальной сети и войти паролем. Это режим `compose.deploy.yaml` по умолчанию.
 
 1. Создайте проект/стек `symport` и вставьте содержимое [`compose.deploy.yaml`](../compose.deploy.yaml) (раздел 2).
-2. В переменных проекта (Portainer: *Environment variables*; UGREEN: переменные проекта) задайте **три** значения
-   (адрес и пароль ниже — пример, подставьте свои):
+2. В переменных проекта (Portainer: *Environment variables*; UGREEN: переменные проекта) задайте **два** значения
+   (адрес и пароль ниже — пример, подставьте свои; `SYMPORT_ACCESS_MODE=lan` уже стоит по умолчанию):
 
    ```env
-   SYMPORT_ACCESS_MODE=lan
    SYMPORT_BIND=192.168.1.5
    SYMPORT_ADMIN_PASSWORD=<ваш-собственный-пароль-не-короче-12-символов>
    ```
@@ -84,7 +83,8 @@ docker compose -f compose.deploy.yaml ps        # healthy через ~20 с
 3. Запустите стек. С другого компьютера откройте `http://192.168.1.5:8765/` — появится экран входа. Войдите; кнопка
    «Выйти» — в нижней панели меню. Ничего клонировать и настраивать по SSH не нужно.
 
-**Если что-то не так, контейнер не стартует и сообщает причину** (логи стека, код выхода 78): нет пароля, пароль слабый,
+**Если что-то не так, контейнер не стартует и сообщает причину** (логи стека, код выхода 78). Пока не заданы `SYMPORT_BIND` и
+пароль, стек поднимется с ошибкой, а порт останется на loopback — незащищённого API нет ни в какой момент. Причины: нет пароля, пароль слабый,
 `SYMPORT_BIND` — `0.0.0.0`/`127.0.0.1` либо не совпадает с портом, неизвестный режим. SymPort никогда не откроет API без
 защиты «в обход». `SYMPORT_BIND=0.0.0.0` сам по себе ничего не открывает и ничего не отключает: в Localhost-режиме это
 ошибка конфигурации, а в Home LAN он допустим только вместе с точным `SYMPORT_LAN_HOST`.
@@ -117,8 +117,7 @@ docker compose -f compose.deploy.yaml ps        # healthy через ~20 с
 ### Смена IP, возврат и забытый пароль
 
 * **Сменился IP NAS:** обновите `SYMPORT_BIND` (и `SYMPORT_LAN_HOST`, если задан), перезапустите стек. Старый адрес перестанет работать.
-* **Вернуться в Localhost:** удалите `SYMPORT_ACCESS_MODE`, `SYMPORT_BIND`, `SYMPORT_ADMIN_PASSWORD*` (или задайте
-  `SYMPORT_ACCESS_MODE=localhost`, `SYMPORT_BIND=127.0.0.1`) и перезапустите. Тома с данными не затрагиваются.
+* **Вернуться в Localhost:** задайте `SYMPORT_ACCESS_MODE=localhost`, `SYMPORT_BIND=127.0.0.1` (пароль можно убрать) и перезапустите. Тома с данными не затрагиваются.
 * **Забыли пароль:** пароль лежит только в вашей переменной/файле. Задайте новый `SYMPORT_ADMIN_PASSWORD` и перезапустите
   стек — старые сессии сбрасываются, данные в томах остаются.
 * Проверка до запуска: `docker compose -f compose.deploy.yaml config` показывает итоговые значения.
@@ -129,8 +128,8 @@ docker compose -f compose.deploy.yaml ps        # healthy через ~20 с
 |---|---|---|
 | `SYMPORT_IMAGE` | `ghcr.io/grayhex/s60modern:latest` | образ или тег (например `…:0.10.0`; лучше закрепить версию) |
 | `SYMPORT_HTTP_PORT` | `8765` | порт (меняется вместе с проброшенным портом и healthcheck) |
-| `SYMPORT_ACCESS_MODE` | `localhost` | `lan` — Home LAN с обязательным входом (см. раздел 4) |
-| `SYMPORT_BIND` | `127.0.0.1` | адрес публикации порта на хосте; в Home LAN — IP вашего NAS |
+| `SYMPORT_ACCESS_MODE` | `lan` | `lan` — Home LAN с обязательным входом (см. раздел 4); `localhost` — только SSH/HTTPS-прокси |
+| `SYMPORT_BIND` | `127.0.0.1` | адрес публикации порта на хосте; в Home LAN **обязательно** укажите IP вашего NAS |
 | `SYMPORT_LAN_HOST` | пусто | дополнительный точный адрес/имя для Home LAN (обязателен при `SYMPORT_BIND=0.0.0.0`) |
 | `SYMPORT_ADMIN_PASSWORD`, `…_FILE`, `…_HASH` | пусто | пароль администратора (ровно один способ); обязателен в Home LAN |
 | `SYMPORT_SESSION_IDLE_MINUTES`, `SYMPORT_SESSION_MAX_MINUTES` | 120 / 720 | простой и предельная длительность сессии |
