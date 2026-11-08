@@ -27,7 +27,10 @@ def test_deployment_keeps_the_security_posture_of_the_local_compose():
     for key in ("cap_drop", "security_opt", "pids_limit", "init", "healthcheck", "command"):
         assert service[key] == base[key], key
     assert service["ports"][0].startswith("${SYMPORT_BIND:-127.0.0.1}:"), "must stay loopback-bound by default"
-    assert set(service["environment"]) == set(base["environment"])
+    lan_keys = {"SYMPORT_ACCESS_MODE", "SYMPORT_BIND", "SYMPORT_LAN_HOST", "SYMPORT_ADMIN_PASSWORD",
+                "SYMPORT_ADMIN_PASSWORD_HASH", "SYMPORT_ADMIN_PASSWORD_FILE", "SYMPORT_SESSION_IDLE_MINUTES",
+                "SYMPORT_SESSION_MAX_MINUTES"}
+    assert set(service["environment"]) == set(base["environment"]) | lan_keys
     assert deploy["networks"]["emulator"]["internal"] is True
     assert deploy["services"]["mgo-symbian"]["profiles"] == ["emulator"]
     assert deploy["services"]["mgo-symbian"]["image"] == local["services"]["mgo-symbian"]["image"]
@@ -47,4 +50,20 @@ def test_publish_workflow_gates_every_architecture_on_a_smoke_test():
     tags = next(s for s in manifest["steps"] if s.get("id") == "meta")["with"]["tags"]
     assert "value=latest,enable={{is_default_branch}}" in tags and "type=semver,pattern={{version}}" in tags
     assert workflow["permissions"] == {"contents": "read"} and job["permissions"]["packages"] == "write"
-    assert workflow[True]["push"]["tags"] == ["v*.*.*"]
+    assert workflow[True]["push"]["tags"] == ["v*.*.*", "[0-9]*.[0-9]*.[0-9]*"]
+
+
+def test_home_lan_mode_is_opt_in_and_ships_no_credentials():
+    service = deploy["services"]["workbench"]
+    env = service["environment"]
+    assert env["SYMPORT_ACCESS_MODE"] == "${SYMPORT_ACCESS_MODE:-localhost}"
+    assert env["SYMPORT_BIND"] == "${SYMPORT_BIND:-127.0.0.1}", "the app must see the address Docker publishes"
+    assert env["SYMPORT_ADMIN_PASSWORD"] == "${SYMPORT_ADMIN_PASSWORD:-}", "no default or example password"
+    assert env["SYMPORT_ADMIN_PASSWORD_HASH"] == "${SYMPORT_ADMIN_PASSWORD_HASH:-}"
+    assert service["ports"] == ["${SYMPORT_BIND:-127.0.0.1}:${SYMPORT_HTTP_PORT:-8765}:${SYMPORT_HTTP_PORT:-8765}"]
+    text = (ROOT / "compose.deploy.yaml").read_text(encoding="utf-8")
+    assert "0.0.0.0:" not in text and "192.168." not in text, "no LAN address is hardcoded in the product"
+    probe = " ".join(service["healthcheck"]["test"])
+    assert "/healthz" in probe and "/api/state" not in probe, "the probe must work without a login"
+    assert "/healthz" in " ".join(local["services"]["workbench"]["healthcheck"]["test"])
+    assert "/healthz" in (ROOT / "Dockerfile").read_text(encoding="utf-8")

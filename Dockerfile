@@ -63,5 +63,5 @@ RUN --mount=type=secret,id=proxy_ca \
 USER 10001:10001
 EXPOSE 8765
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('SYMPORT_HTTP_PORT','8765')+'/api/state', timeout=3).read()"
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('SYMPORT_HTTP_PORT','8765')+'/healthz', timeout=3).read()"
 CMD ["python", "-m", "symport.web", "--host", "0.0.0.0", "--port", "8765"]

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>SymPort</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/auth/login.css">
+</head>
+<body>
+  <main class="login" aria-labelledby="title">
+    <img class="login-logo" src="/brand/nokia-blue.svg" alt="">
+    <h1 id="title">SymPort</h1>
+    <p class="login-lead" data-i18n="lead">Войдите, чтобы открыть рабочее место SymPort.</p>
+    <form id="form" autocomplete="off" novalidate>
+      <label for="password" data-i18n="password">Пароль администратора</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      <button id="submit" type="submit" data-i18n="submit">Войти</button>
+      <p id="message" class="login-message" role="alert" aria-live="assertive" hidden></p>
+    </form>
+    <p class="login-hint" data-i18n="hint">Пароль задан в настройках запуска (SYMPORT_ADMIN_PASSWORD) на вашем NAS или компьютере.</p>
+    <button id="lang" class="login-lang" type="button" aria-label="Language">EN</button>
+  </main>
+  <script src="/auth/login.js"></script>
+</body>
+</html>

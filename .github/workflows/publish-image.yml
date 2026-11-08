@@ -2,13 +2,14 @@ name: Publish image
 
 # ghcr.io/grayhex/s60modern
 #   push to main   -> :latest, :main, :sha-<short>
-#   tag vX.Y.Z     -> :X.Y.Z, :X.Y (never :latest, which follows main)
+#   tag X.Y.Z / vX.Y.Z -> :X.Y.Z, :X.Y (never :latest, which follows main)
+# Tags may be written with or without the leading "v" (0.10.0 or v0.10.0).
 # Every architecture is built natively, smoke-tested as a running container and only then pushed. An
 # architecture whose smoke test fails is NOT published; the manifest lists exactly what passed.
 on:
   push:
     branches: [main]
-    tags: ["v*.*.*"]
+    tags: ["v*.*.*", "[0-9]*.[0-9]*.[0-9]*"]
   workflow_dispatch:
 
 permissions:
@@ -69,6 +70,8 @@ jobs:
           docker exec smoke python tools/check_gammu_contract.py
           docker exec smoke python -m symport theme build --variant light --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "ok"'
           docker exec smoke python -c 'import platform; print(platform.machine())'
+      - name: Home LAN mode smoke test (login, strict Host, fail-closed configuration)
+        run: tools/ci/lan_smoke.sh symport-smoke:${{ strategy.job-index }}
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3

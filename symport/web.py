@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from datetime import UTC, datetime
 from http.cookies import SimpleCookie
@@ -23,6 +24,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
+from symport.access import (
+    SESSION_COOKIE,
+    AccessConfig,
+    AccessConfigError,
+    LoginLimiter,
+    SessionStore,
+    load_access_config,
+    verify_password,
+)
 from symport.catalog import AppCatalog
 from symport.config import find_repo_root
 from symport.inspector import Inspector
@@ -174,8 +184,11 @@ def ui_default_mode() -> str:
 
 
 class Workbench:
-    def __init__(self, repo: Path):
+    def __init__(self, repo: Path, access: AccessConfig | None = None):
         self.repo = repo
+        self.access = access or AccessConfig()
+        self.sessions = SessionStore(self.access.idle_seconds, self.access.absolute_seconds)
+        self.limiter = LoginLimiter()
         self.devices = DeviceManager(repo)
         self.local_transport = self.devices.transport
         self.bridge_relay = None
@@ -409,12 +422,50 @@ def make_handler(state: Workbench):
         def log_message(self, format: str, *args) -> None:
             return  # avoid logging private URL parameters
 
-        def _host_ok(self) -> bool:
+        def _host_ok(self, path: str = "") -> bool:
+            if len(self.headers.get_all("Host", [])) != 1:
+                return False
+            host = self.headers.get("Host", "")
+            if state.access.lan:
+                # Exact configured LAN address(es) only; the in-container healthcheck may use loopback.
+                return host in state.access.allowed_hosts or (
+                    path == "/healthz" and host_allowed(host, self.server.server_port))
             public = os.getenv("SYMPORT_PUBLIC_ORIGIN", "")
-            return len(self.headers.get_all("Host", [])) == 1 and (host_allowed(self.headers.get("Host", ""), self.server.server_port) or (public.startswith("https://") and self.headers.get("Host") == urlsplit(public).netloc))
+            return host_allowed(host, self.server.server_port) or (public.startswith("https://") and host == urlsplit(public).netloc)
+
+        def _cookie(self, name: str) -> str:
+            try:
+                jar = SimpleCookie()
+                jar.load(self.headers.get("Cookie", ""))
+                return jar[name].value if name in jar else ""
+            except Exception:
+                return ""
+
+        def _session(self):
+            return state.sessions.get(self._cookie(SESSION_COOKIE)) if state.access.lan else None
+
+        def _token(self) -> str:
+            """CSRF/media token of this request: the per-process token locally, the per-session one in LAN mode."""
+            if state.access.lan:
+                session = self._session()
+                return session.csrf if session else ""
+            return state.token
+
+        def _https(self) -> bool:
+            public = state.access.public_origin
+            return bool(public) and self.headers.get("Host") == urlsplit(public).netloc
+
+        def _cookie_attrs(self) -> str:
+            return "; HttpOnly; SameSite=Strict" + ("; Secure" if self._https() else "")
+
+        def _media_ok(self) -> bool:
+            token = self._token()
+            return bool(token) and secrets.compare_digest(self._cookie("symport_media").encode(), token.encode()) \
+                and self.headers.get("Sec-Fetch-Site") != "cross-site"
 
         def _send(self, content: bytes, mime: str, status: int = 200,
-                  filename: str | None = None, session: bool = False) -> None:
+                  filename: str | None = None, session: bool = False, cookies: tuple[str, ...] = (),
+                  extra: tuple[tuple[str, str], ...] = ()) -> None:
             self.send_response(status)
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(content)))
@@ -425,24 +476,60 @@ def make_handler(state: Workbench):
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'self'; img-src 'self' data:; media-src 'self' blob:; script-src 'self'; "
-                f"style-src 'self' 'nonce-{state.token}'; connect-src 'self' blob: http://127.0.0.1:24652; object-src 'none'; "
+                f"style-src 'self' 'nonce-{self._token() or secrets.token_urlsafe(12)}'; connect-src 'self' blob: http://127.0.0.1:24652; object-src 'none'; "
                 "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-            if session:
-                self.send_header("Set-Cookie", f"symport_media={state.token}; HttpOnly; SameSite=Strict; Path=/api/")
+            if session and self._token():
+                self.send_header("Set-Cookie", f"symport_media={self._token()}{self._cookie_attrs()}; Path=/api/")
+            for cookie in cookies:
+                self.send_header("Set-Cookie", cookie)
+            for key, value in extra:
+                self.send_header(key, value)
             if filename:
                 self.send_header("Content-Disposition",
                                  f'attachment; filename="{filename}"')
             self.end_headers()
             self.wfile.write(content)
 
-        def _json(self, data: dict, status: int = 200) -> None:
+        def _json(self, data: dict, status: int = 200, **kwargs) -> None:
             self._send(json.dumps(data, ensure_ascii=False).encode("utf-8"),
-                       "application/json; charset=utf-8", status)
+                       "application/json; charset=utf-8", status, **kwargs)
+
+        def _asset(self, relative: str, mime: str):
+            try:
+                return self._send((ASSETS / relative).read_bytes(), mime)
+            except OSError:
+                return self._json({"error": "Not found"}, 404)
+
+        def _lan_get_gate(self, path: str) -> bool:
+            """Home LAN: only the login screen, its assets and the health probe are anonymous. True = handled."""
+            if path == "/healthz":
+                self._json({"status": "ok"})
+                return True
+            if path == "/api/auth/session":
+                session = self._session()
+                self._json({"mode": "lan", "authenticated": bool(session), **({"csrf": session.csrf} if session else {})})
+                return True
+            if path in ("/auth/login.js", "/auth/login.css"):
+                self._asset(path.lstrip("/"), "text/javascript; charset=utf-8" if path.endswith(".js") else "text/css; charset=utf-8")
+                return True
+            if self._session():
+                return False
+            if path == "/":
+                self._asset("auth/login.html", "text/html; charset=utf-8")
+                return True
+            if re.fullmatch(r"/(?:brand/[a-z0-9-]+\.(?:svg|png)|favicon\.svg|fonts/[A-Za-z]+\.ttf)", path):
+                return False  # static login-screen artwork and fonts
+            self._json({"error": "Sign in required", "login": True}, 401)
+            return True
 
         def do_GET(self) -> None:
-            if not self._host_ok():
-                return self._json({"error": "Host not allowed"}, 403)
             url = urlsplit(self.path)
+            if not self._host_ok(url.path):
+                return self._json({"error": "Host not allowed"}, 403)
+            if url.path == "/healthz":
+                return self._json({"status": "ok"})
+            if state.access.lan and self._lan_get_gate(url.path):
+                return
             react_root = REACT_ASSETS
             use_react = os.getenv('SYMPORT_FRONTEND', 'react') != 'classic'
             if (url.path == '/' and use_react and (react_root / 'index.html').is_file()) or url.path == '/next' or url.path.startswith('/next/'):
@@ -453,8 +540,9 @@ def make_handler(state: Workbench):
                     return self._json({'error':'React build not found. Run npm ci and npm run build in frontend.'},404)
                 body = target.read_bytes()
                 if relative == 'index.html':
-                    body = body.replace(b'__SESSION_TOKEN__',state.token.encode())
+                    body = body.replace(b'__SESSION_TOKEN__',self._token().encode())
                     body = body.replace(b'__UI_MODE__', ui_default_mode().encode())
+                    body = body.replace(b'__AUTH_MODE__', b'lan' if state.access.lan else b'local')
                 return self._send(body,'image/webp' if target.suffix.lower()=='.webp' else mimetypes.guess_type(str(target))[0] or 'application/octet-stream',session=relative=='index.html')
             static = {
                 "/": ("index.html", "text/html; charset=utf-8"),
@@ -510,14 +598,11 @@ def make_handler(state: Workbench):
                 except OSError:
                     return self._json({"error": "Not found"}, 404)
                 if file == "index.html":
-                    body = body.replace(b"__SESSION_TOKEN__", state.token.encode())
+                    body = body.replace(b"__SESSION_TOKEN__", self._token().encode())
                 return self._send(body, mime, session=file == "index.html")
             if url.path.startswith('/api/audio/'):
-                cookie = SimpleCookie()
                 try:
-                    cookie.load(self.headers.get('Cookie', ''))
-                    token = cookie['symport_media'].value if 'symport_media' in cookie else ''
-                    if not secrets.compare_digest(token.encode(), state.token.encode()) or self.headers.get('Sec-Fetch-Site') == 'cross-site':
+                    if not self._media_ok():
                         return self._json({'error':'Open SymPort before playing private audio'},403)
                     parts = url.path.split('/')
                     if len(parts) != 5:
@@ -548,13 +633,7 @@ def make_handler(state: Workbench):
                 except (ValueError,OSError,KeyError):
                     return self._json({'error':'Audio is unavailable or expired'},400)
             if url.path.startswith('/api/media/'):
-                cookie = SimpleCookie()
-                try:
-                    cookie.load(self.headers.get('Cookie', ''))
-                    value = cookie['symport_media'].value if 'symport_media' in cookie else ''
-                except Exception:
-                    value = ''
-                if not secrets.compare_digest(value.encode(), state.token.encode()) or self.headers.get('Sec-Fetch-Site') == 'cross-site':
+                if not self._media_ok():
                     return self._json({'error': 'Open SymPort before viewing private media'}, 403)
                 sent = False
                 archive = None
@@ -612,13 +691,7 @@ def make_handler(state: Workbench):
                         return self._json({'error': 'Media unavailable or changed; refresh the gallery'}, 400)
                 return
             if url.path == '/api/device/file':
-                cookie = SimpleCookie()
-                try:
-                    cookie.load(self.headers.get('Cookie', ''))
-                    value = cookie['symport_media'].value if 'symport_media' in cookie else ''
-                except Exception:
-                    value = ''
-                if not secrets.compare_digest(value.encode(), state.token.encode()) or self.headers.get('Sec-Fetch-Site') == 'cross-site':
+                if not self._media_ok():
                     return self._json({'error': 'Open SymPort before viewing private phone files'}, 403)
                 try:
                     query = parse_qs(url.query)
@@ -698,17 +771,68 @@ def make_handler(state: Workbench):
                     filename="e52-device-test-report.json")
             return self._json({"error": "Not found"}, 404)
 
+        def _login(self) -> None:
+            client = self.client_address[0]
+            wait = state.limiter.retry_after(client)
+            if wait:
+                return self._json({"error": "Too many attempts", "retry_after": wait}, 429,
+                                  extra=(("Retry-After", str(wait)),))
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 4096 or self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+                    raise ValueError
+                body = json.loads(self.rfile.read(length))
+                password = body.get("password") if isinstance(body, dict) else None
+                if not isinstance(password, str) or not 0 < len(password) <= 256:
+                    raise ValueError
+            except (ValueError, OSError):
+                return self._json({"error": "Bad request"}, 400)
+            if not verify_password(password, state.access.password_hash):
+                state.limiter.failed(client)
+                time.sleep(0.3)
+                return self._json({"error": "Wrong password"}, 401)
+            state.limiter.succeeded(client)
+            state.sessions.revoke(self._cookie(SESSION_COOKIE))
+            token, session = state.sessions.create(client)
+            attrs = self._cookie_attrs()
+            return self._json({"ok": True, "csrf": session.csrf}, cookies=(
+                f"{SESSION_COOKIE}={token}{attrs}; Path=/",
+                f"symport_media={session.csrf}{attrs}; Path=/api/"))
+
+        def _logout(self) -> None:
+            state.sessions.revoke(self._cookie(SESSION_COOKIE))
+            attrs = self._cookie_attrs() + "; Max-Age=0"
+            return self._json({"ok": True}, cookies=(f"{SESSION_COOKIE}={attrs}; Path=/", f"symport_media={attrs}; Path=/api/"))
+
         def do_POST(self) -> None:
             if not self._host_ok():
                 return self._json({"error": "Host not allowed"}, 403)
             origin = self.headers.get("Origin", "")
-            allowed = {f"http://localhost:{self.server.server_port}",
-                       f"http://127.0.0.1:{self.server.server_port}"}
-            public = os.getenv("SYMPORT_PUBLIC_ORIGIN", "")
-            if public.startswith("https://"):
-                allowed.add(public)
+            if state.access.lan:
+                allowed = set(state.access.allowed_origins)
+            else:
+                allowed = {f"http://localhost:{self.server.server_port}",
+                           f"http://127.0.0.1:{self.server.server_port}"}
+                public = os.getenv("SYMPORT_PUBLIC_ORIGIN", "")
+                if public.startswith("https://"):
+                    allowed.add(public)
             if len(self.headers.get_all("Origin", [])) > 1 or (origin and origin not in allowed):
                 return self._json({"error": "Origin not allowed"}, 403)
+            relay_path = self.path.startswith('/api/bridge-relay/')
+            if state.access.lan:
+                # A browser POST must name its origin; only the key-authenticated Bridge relay may omit it.
+                if not origin and not relay_path:
+                    return self._json({"error": "Origin required"}, 403)
+                if self.path == "/api/auth/login":
+                    return self._login()
+                if not relay_path:
+                    session = self._session()
+                    if not session:
+                        return self._json({"error": "Sign in required", "login": True}, 401)
+                    if not secrets.compare_digest(self.headers.get("X-Symport-Token", "").encode(), session.csrf.encode()):
+                        return self._json({"error": "Bad session token"}, 403)
+                    if self.path == "/api/auth/logout":
+                        return self._logout()
             if self.path.startswith('/api/bridge-relay/'):
                 relay = state.bridge_relay
                 if not relay or not relay.authorized(self.headers.get('X-Symport-Relay-Key', '')):
@@ -731,10 +855,13 @@ def make_handler(state: Workbench):
                 except (ValueError, OSError):
                     return self._json({'error': 'Bridge request rejected'}, 400)
             bridge_key = os.getenv("SYMPORT_BRIDGE_KEY", "")
-            authorized = (len(bridge_key) >= 32 and secrets.compare_digest(
-                self.headers.get("X-Symport-Bridge-Key", ""), bridge_key)
-                if self.path == "/api/bridge" else secrets.compare_digest(
-                    self.headers.get("X-Symport-Token", ""), state.token))
+            if state.access.lan:
+                authorized = True  # the session + CSRF token were verified above; the legacy key route is not used
+            else:
+                authorized = (len(bridge_key) >= 32 and secrets.compare_digest(
+                    self.headers.get("X-Symport-Bridge-Key", ""), bridge_key)
+                    if self.path == "/api/bridge" else secrets.compare_digest(
+                        self.headers.get("X-Symport-Token", ""), state.token))
             if not authorized:
                 return self._json({"error": "Bad session token"}, 403)
             if self.path == '/api/ringtone/upload':
@@ -881,11 +1008,24 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--repo", type=Path)
     parser.add_argument("--open", action="store_true", help="Open browser")
     args = parser.parse_args(argv)
+    try:
+        access = load_access_config(port=args.port)
+    except AccessConfigError as exc:
+        print(f"SymPort: configuration error: {exc}", file=sys.stderr)
+        print("SymPort did not start. Fix the setting above (nothing is served until it is safe).", file=sys.stderr)
+        raise SystemExit(78) from None
     repo = find_repo_root(explicit=args.repo) if args.repo else find_repo_root()
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(Workbench(repo)))
-    print(f"SymPort Workbench: http://127.0.0.1:{args.port}")
-    print("Only serve via localhost / SSH tunnel. Never expose directly to the Internet.")
-    if args.open and args.host == "127.0.0.1":
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(Workbench(repo, access)))
+    if access.lan:
+        shown = sorted(access.allowed_origins)
+        print("SymPort Workbench — Home LAN mode (login required): " + ", ".join(shown))
+        for warning in access.warnings:
+            print("WARNING: " + warning, file=sys.stderr)
+        print("Do not forward this port on your router and do not expose it to the Internet.")
+    else:
+        print(f"SymPort Workbench: http://127.0.0.1:{args.port}")
+        print("Only serve via localhost / SSH tunnel. Never expose directly to the Internet.")
+    if args.open and args.host == "127.0.0.1" and not access.lan:
         webbrowser.open(f"http://127.0.0.1:{args.port}")
     try:
         server.serve_forever()
