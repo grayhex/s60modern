@@ -43,15 +43,18 @@ def components() -> list[dict]:
     return rows
 
 
-def com_state(port: str) -> str:
-    """'free' | 'busy' | 'unavailable'. Opens the port without writing a byte, then closes it."""
+def com_state(port: str, silent: bool = False) -> str:
+    """'free' | 'busy' | 'unavailable' | 'silent'. Opens the port without writing a byte, then closes it.
+
+    `silent` is what the Bridge learned from a failed AT identify: the port opens and nobody holds it, but the phone does
+    not answer on it. Opening alone cannot tell that from a healthy port."""
     try:
         import serial
     except ImportError:
         return "unavailable"
     try:
         serial.Serial(port, timeout=0.2).close()
-        return "free"
+        return "silent" if silent else "free"
     except serial.SerialException as exc:
         text = str(exc).casefold()
         return "busy" if "access is denied" in text or "permission" in text or "busy" in text else "unavailable"
@@ -141,6 +144,19 @@ PHONE: dict[str, tuple[str, Text, Text | None]] = {
         (
             "Close Nokia Suite / PC Suite, Ovi Suite and any terminal program that holds the port, then press “Rescan”.",
             "Закройте Nokia Suite / PC Suite, Ovi Suite и программы-терминалы, занявшие порт, затем нажмите «Повторить поиск».",
+        ),
+    ),
+    "com-silent": (
+        WARN,
+        (
+            "The Nokia COM port opens and is free, but the phone does not answer on it.",
+            "COM-порт Nokia открывается и свободен, но телефон на нём не отвечает.",
+        ),
+        (
+            "Switch the phone off and on, reconnect the cable, and choose “PC Suite” only after the phone has finished starting. "
+            "Try another cable or USB port. A phone that stays silent may not accept AT commands on this port at all.",
+            "Выключите и включите телефон, переподключите кабель и выберите «PC Suite» только после полной загрузки телефона. "
+            "Попробуйте другой кабель или порт USB. Телефон, который молчит, может вообще не принимать AT-команды на этом порту.",
         ),
     ),
     "gammu-not-identified": (
@@ -284,15 +300,22 @@ LINK: dict[str, tuple[str, Text, Text | None]] = {
 }
 
 
+def at_ports(host: dict) -> list[dict]:
+    """The Nokia COM ports an AT identify makes sense on: the “Java comm” port is not one."""
+    return [p for p in host.get("serial") or [] if p.get("kind") != "javacomm"]
+
+
 def classify_phone(host: dict, com: dict[str, str], identified: int) -> str:
     usb = host.get("usb") or []
-    serial = host.get("serial") or []
+    serial = at_ports(host)
     volumes = host.get("volumes") or []
     bluetooth = host.get("bluetooth") or []
     if identified > 0:
         return "ready"
     if any(state == "busy" for state in com.values()):
         return "com-busy"
+    if any(state == "silent" for state in com.values()):
+        return "com-silent"
     if serial:
         return "gammu-not-identified"
     if volumes and not serial:
@@ -352,7 +375,13 @@ def routes(host: dict, com: dict[str, str], identified: int, dku2: str) -> list[
         pc = (FAIL, ("PC Suite: the COM port is busy", "PC Suite: COM-порт занят"),
               ("Close Nokia Suite / Ovi Suite and terminal programs, then rescan.",
                "Закройте Nokia Suite / Ovi Suite и терминальные программы, затем повторите поиск."))
-    elif host.get("serial"):
+    elif "silent" in com.values():
+        pc = (WARN, ("PC Suite: the COM port opens but the phone is silent", "PC Suite: COM-порт открывается, но телефон молчит"),
+              ("Switch the phone off and on, reconnect the cable and choose “PC Suite” after it has started; try another cable or "
+               "port, then rescan." + (" The Nokia-specific DKU-2 connection did not answer either." if dku2 == "no-response" else ""),
+               "Выключите и включите телефон, переподключите кабель, выберите «PC Suite» после загрузки; попробуйте другой кабель "
+               "или порт и повторите поиск." + (" Nokia-специфичное подключение DKU-2 тоже не ответило." if dku2 == "no-response" else "")))
+    elif at_ports(host):
         pc = (WARN, ("PC Suite: a COM port exists but the phone did not answer", "PC Suite: COM-порт есть, но телефон не ответил"),
               ("Unlock the phone, keep “PC Suite” mode and rescan.", "Разблокируйте телефон, оставьте «PC Suite» и повторите поиск."))
     elif dku2 == "no-response":
@@ -379,7 +408,8 @@ def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | Non
     """The complete report. `host` is symport.bridge.discovery.host_candidates(); `relay` is OutboundRelay.public_state()."""
     usb = host.get("usb") or []
     problems = [row for row in usb if row.get("status") == "problem"]
-    serial = host.get("serial") or []
+    serial = at_ports(host)
+    java = len(host.get("serial") or []) - len(serial)  # “Java comm” ports: listed, never probed
     volumes = host.get("volumes") or []
     bluetooth = host.get("bluetooth") or []
     parts = components() if parts is None else parts
@@ -394,11 +424,17 @@ def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | Non
                ("USB driver reports a problem" if problems else "USB driver OK" if usb else "USB driver: nothing to check",
                 "Драйвер USB сообщает о проблеме" if problems else "Драйвер USB в порядке" if usb else "Драйвер USB: проверять нечего")),
         _check("com", OK if serial else INFO,
-               (f"Nokia COM ports: {len(serial)}" if serial else "No Nokia COM port",
-                f"COM-портов Nokia: {len(serial)}" if serial else "COM-порта Nokia нет")),
-        _check("com-busy", FAIL if "busy" in com.values() else (OK if com else INFO),
-               ("COM port is busy" if "busy" in com.values() else "COM port is free" if com else "COM port: nothing to check",
-                "COM-порт занят" if "busy" in com.values() else "COM-порт свободен" if com else "COM-порт: проверять нечего")),
+               (f"Nokia COM ports: {len(serial)}" + (f" (+{java} Java comm, not used)" if java else "") if serial
+                else "No Nokia COM port" + (f" ({java} Java comm port, not an AT port)" if java else ""),
+                f"COM-портов Nokia: {len(serial)}" + (f" (+{java} Java comm, не используется)" if java else "") if serial
+                else "COM-порта Nokia нет" + (f" ({java} порт Java comm — не AT-порт)" if java else ""))),
+        _check("com-busy", FAIL if "busy" in com.values() else WARN if "silent" in com.values() else (OK if com else INFO),
+               ("COM port is busy" if "busy" in com.values()
+                else "COM port opens but is silent (no AT answer)" if "silent" in com.values()
+                else "COM port is free" if com else "COM port: nothing to check",
+                "COM-порт занят" if "busy" in com.values()
+                else "COM-порт открывается, но молчит (нет ответа на AT)" if "silent" in com.values()
+                else "COM-порт свободен" if com else "COM-порт: проверять нечего")),
         _check("gammu", OK if identified > 0 else (WARN if serial else INFO),
                ("The phone identified itself" if identified > 0 else "The phone has not identified itself",
                 "Телефон представился" if identified > 0 else "Телефон пока не представился")),
@@ -410,6 +446,15 @@ def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | Non
                 f"Сопряжено по Bluetooth: {len(bluetooth)}" if bluetooth else "Сопряжённых по Bluetooth Nokia нет")),
     ]
     status, summary, action = PHONE[phone_code]
+    if phone_code == "com-silent" and action:
+        note = {
+            "no-response": ("The Nokia-specific DKU-2 connection did not answer either.",
+                            "Nokia-специфичное подключение DKU-2 тоже не ответило."),
+            "not-tried": ("The Nokia-specific DKU-2 connection has not been tried yet; it runs after “Rescan”.",
+                          "Nokia-специфичное подключение DKU-2 ещё не пробовалось; оно запускается после «Повторить поиск»."),
+        }.get(dku2.split(":")[0])
+        if note:
+            action = (action[0] + " " + note[0], action[1] + " " + note[1])
     codes = sorted({row.get("problem_code") for row in problems if row.get("problem_code")})
     if phone_code == "usb-driver-problem" and codes and action:
         hint = {28: ("Windows reports error 28: no driver is installed for this device. ",

@@ -128,6 +128,7 @@ It reads the safe report the running Bridge keeps current and shows **separate**
 | `mtp-only` | Windows shows the phone only as a media device (class WPD/MTP): no COM port, no drive letter — what a Nokia E72 reported on Windows 11 | for files choose Mass storage on the phone (SymPort does not read MTP yet); for contacts/calendar/SMS the Nokia PC Suite / Connectivity Cable driver must provide a COM port — install it yourself, choose PC Suite, replug |
 | `no-com` | driver fine, but no COM port | switch the phone to PC Suite (not Mass storage / Media transfer), replug |
 | `com-busy` | the Nokia COM port is held by another program | close Nokia Suite / Ovi Suite / terminals |
+| `com-silent` | the Nokia COM port opens and is free, but the phone gives no answer on it (the Gammu AT identify failed) | switch the phone off and on, reconnect the cable, choose PC Suite only after the phone has finished starting, try another cable/port; the action text also says what the DKU-2 probe returned |
 | `gammu-not-identified` | free COM port, no answer from the phone | unlock, keep PC Suite, rescan; a model-specific profile may be needed |
 | `mass-storage-only` | only the drive is available | files and backups work; contacts/calendar/SMS need PC Suite + COM |
 | `bluetooth-only` | a paired Nokia, nothing on USB | connect USB or use a configured Bluetooth profile |
@@ -162,7 +163,17 @@ phone first); the capability matrix marks them unsupported and every PIM operati
 never reports a phone model, firmware or identity, and nothing becomes `available` until Windows actually listed a storage.
 **Not yet verified on a physical phone** — see the hardware checklist.
 
-**Nokia-specific Gammu connection without COM.** When Windows shows a working Nokia USB device but no COM port, the Bridge
+**COM port selection and polling.** A Nokia driver can expose two ports: the AT port (“Nokia E72 USB Modem”) and the
+“USB Serial Port” the S60 Java runtime uses (`IF_JAVACOMM`). The Bridge recognises Nokia ports by their description/hwid text
+(pyserial reports no VID for `NMWCD\VID_0421&…` ids), asks the **Modem port first** and **never opens the Java comm port**
+(the Doctor lists it as “+1 Java comm, not used”). While nothing answers, the AT identify cycle backs off from 30 s,
+doubling up to 10 minutes, so a silent phone's modem channel is not hammered (an identify can take up to 20 s per port); the
+delay starts over when the set of COM ports or Nokia USB devices changes and on **Rescan**. No identify starts while another
+phone operation holds the Bridge, and closing the Bridge stops an identify in flight so it does not keep a COM port open.
+Not yet verified on a physical phone.
+
+**Nokia-specific Gammu connection (DKU-2).** When Windows shows a working Nokia USB device and the AT route gave no answer
+(no COM port, **or COM ports that stay silent**), the Bridge
 makes one short, read-only Gammu `identify` over `connection = dku2` and then `dku2phonet` (the Nokia-specific Windows
 connections that find the device through the Nokia driver). It is repeated only when the USB device set changes or you press
 Rescan; a silent phone just records “no response”. Whether a given phone answers this way with the installed driver is not
