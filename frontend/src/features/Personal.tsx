@@ -22,6 +22,7 @@ import {
 import { Card, CapabilityHint, DeviceSelect, ErrorMessage } from '../components/ui';
 import { unverifiedReason } from '../api/capabilities';
 import { Download, Field, JsonReport, OperationStatus } from '../components/workspace';
+import RouteBanner from '../components/RouteBanner';
 type Domain = 'contacts' | 'sms' | 'calendar' | 'tasks';
 const names = {
   contacts: ['Contacts', 'Контакты'],
@@ -36,6 +37,7 @@ export default function Personal({ domain: initial }: { domain: Domain }) {
   return (
     <>
       <PageHeader title={t(names[domain][0], names[domain][1])} />
+      <RouteBanner domain={domain} />
       <Card>
         <div className="form-row">
           <DeviceSelect value={device} onChange={setDevice} />

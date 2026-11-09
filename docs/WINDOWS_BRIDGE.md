@@ -146,15 +146,38 @@ The USB list shows each Nokia node's class (e.g. `WPD`, `Ports`, `Modem`), the c
 paths, addresses (the SymPort URL is reduced to its scheme), keys, tokens, contacts or SMS.
 
 
-### Three independent routes
+### Four independent routes
 
-The Doctor shows three routes side by side; none implies another, and a missing one is never reported as the only dead end:
+The Doctor shows four routes side by side; none implies another, and a missing one is never reported as the only dead end.
+Every route has one **state**: `unavailable` (not there), `busy` (another program holds it), `silent` (found, the phone does
+not answer), `available` (the phone answered a safe probe) or `verified` (a real operation completed in this session).
 
-| Route | What it gives | What it needs |
+| Route (`id`) | What it gives | What it needs |
 |---|---|---|
-| **Files over MTP** (Windows Portable Devices) | browse and download files, **read-only** | the phone shown by Windows as a portable device (`WPD`, e.g. Nokia E72 `0421:0223`); no Nokia driver, no COM port |
-| **Mass storage** (drive letter) | files and backups, including writes with the usual confirmations | “Mass storage” mode on the phone |
-| **PC Suite** (Gammu, COM or DKU-2) | identity, contacts, calendar, SMS — only what the capability matrix proves | the Nokia Connectivity Cable driver (installed by you) and “PC Suite” mode |
+| **Gammu** (`gammu`; COM or DKU-2) | identity, contacts, calendar, SMS — only what the capability matrix proves | the Nokia Connectivity Cable driver (installed by you) and “PC Suite” mode |
+| **USB OBEX** (`pccs`) | contacts and calendar, **read-only** | the Nokia driver (`nmwcd`) and “PC Suite” mode; Nokia PC Suite closed |
+| **Files over MTP** (`mtp`; Windows Portable Devices) | browse and download files, **read-only** | the phone shown by Windows as a portable device (`WPD`, e.g. Nokia E72 `0421:0223`); no Nokia driver, no COM port |
+| **Mass storage** (`mass-storage`; drive letter) | files and backups, including writes with the usual confirmations | “Mass storage” mode on the phone |
+
+**Which route serves which job** (`transport_preference` in `settings.json`, set in the tray settings window; default `auto`):
+
+| Preference | Contacts and calendar | SMS | Files |
+|---|---|---|---|
+| `auto` | Gammu when it is **verified**, otherwise USB OBEX | Gammu only | Mass storage, otherwise MTP (read-only) |
+| `gammu` | Gammu only | Gammu | — (says so) |
+| `pccs` | USB OBEX only | — | — |
+| `mtp` | — | — | MTP only |
+
+An explicit preference uses only that route and names what it cannot do. The choice is made when the Bridge detects or rescans
+the phone and when the settings change, **never while a phone operation holds the Bridge** (the running operation keeps its route;
+the change is applied afterwards). Every switch is written to the operations journal as `route-switch` (time, action, status — no
+phone data); a route chosen in the SymPort app is journalled as `connection-select` and sends nothing to the phone.
+**Gammu dead end** = every Gammu attempt (COM ports, DKU-2) is over, Gammu never became `verified`, and USB OBEX works: the
+Doctor then says so, and the app offers to switch (“Gammu не достучался до телефона, контакты и календарь доступны по USB OBEX”).
+The connection rows carry `route`, `route_state`, `recommended_for`, `route_preference` and `dead_end` — nothing from the phone
+and no interface path. The real Gammu error code (`ERR_DEVICENOTEXIST`, `ERR_DEVICEBUSY`, `ERR_TIMEOUT`, …) is shown in the Doctor
+from a **fixed list** with a hint in English and Russian — never raw Gammu or Windows text. `ERR_DEVICENOTEXIST` over the
+Nokia-specific (DKU-2) connection is the known limit of the x64 Gammu build; the hint then points to the USB OBEX route.
 
 **How the phone is recognised as a Nokia.** Windows lists a Portable Device in “This PC” with a Shell path. Two rules, either is
 enough: (1) the vendor id is in the path (`…usb#vid_0421&pid_xxxx#…`, older Windows); (2) Windows 11's generic MTP driver

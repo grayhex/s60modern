@@ -59,6 +59,14 @@ def diagnostics_command(root: Path, port: int) -> list[str]:
     return _window_command("--diagnostics", root, port)
 
 
+TRANSPORT_LABELS = {
+    "auto": "Automatic (recommended)",
+    "gammu": "Gammu only",
+    "pccs": "USB OBEX only (contacts and calendar, read-only)",
+    "mtp": "MTP only (files, read-only)",
+}
+
+
 def settings_window(root_dir: Path, port: int) -> int:
     """Blocking Tk settings dialog (call from a process main thread). Returns SETTINGS_SAVED or SETTINGS_CLOSED."""
     from tkinter import BooleanVar, StringVar, Tk, filedialog, messagebox, ttk
@@ -87,6 +95,11 @@ def settings_window(root_dir: Path, port: int) -> int:
     ttk.Checkbutton(
         frame, text="Check for updates daily (always asks before installing)", variable=checks
     ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(8, 0))
+    preference = StringVar(value=TRANSPORT_LABELS.get(config.get("transport_preference", "auto"), TRANSPORT_LABELS["auto"]))
+    ttk.Label(frame, text="Route to the phone").grid(row=9, column=0, sticky="w", pady=(8, 0))
+    ttk.Combobox(frame, textvariable=preference, values=list(TRANSPORT_LABELS.values()), state="readonly", width=43).grid(
+        row=9, column=1, columnspan=2, sticky="w", pady=(8, 0)
+    )
     gammu = StringVar(value=config.get("gammu_config", ""))
     profiles = StringVar(value=config.get("connections_file", ""))
     for row, label, value in [
@@ -130,6 +143,7 @@ def settings_window(root_dir: Path, port: int) -> int:
                 update_check=checks.get(),
                 gammu_config=gammu.get(),
                 connections_file=profiles.get(),
+                transport_preference=next((k for k, v in TRANSPORT_LABELS.items() if v == preference.get()), "auto"),
             )
             save_config(root_dir, config)
             autostart(startup.get())
@@ -148,7 +162,7 @@ def settings_window(root_dir: Path, port: int) -> int:
     ok.grid(row=0, column=0, padx=(0, 8))
     ttk.Button(buttons, text="Cancel", command=close).grid(row=0, column=1)
     ttk.Label(frame, text="No firmware flashing. Pair Bluetooth devices in Windows first.").grid(
-        row=7, column=0, columnspan=3, sticky="w", pady=(12, 0)
+        row=10, column=0, columnspan=3, sticky="w", pady=(12, 0)
     )
     root.protocol("WM_DELETE_WINDOW", close)
     root.bind("<Return>", lambda _event: save())

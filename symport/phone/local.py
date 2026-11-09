@@ -45,6 +45,8 @@ class LocalTransports:
             self.pccs = PccsAdapter()
             self.adapters[self.pccs.id] = self.pccs
         self.last_connections = []
+        # Set by the Windows Bridge: {"states": {route: state}, "recommended_for": {route: [jobs]}, ...}; nothing from the phone.
+        self.route_hints: dict = {}
 
     def close(self) -> None:
         """Bridge shutdown: let every adapter that keeps a phone store or interface open release it."""
@@ -61,12 +63,36 @@ class LocalTransports:
     def personal(self, value):
         self.gammu.personal = value
 
+    @staticmethod
+    def route_of(row: dict) -> str | None:
+        """Which route (routes.ROUTE_IDS) a connection row belongs to."""
+        if row.get("transport") == "mounted-volume":
+            return "mass-storage"
+        return {"nokia-pccs": "pccs", "wpd-nokia": "mtp"}.get(str(row.get("id"))) or ("gammu" if row.get("transport") == "gammu" else None)
+
+    def _route(self, row: dict) -> None:
+        """Add route_state / recommended_for to a row (no phone data, no interface path)."""
+        route = self.route_of(row)
+        hints = self.route_hints or {}
+        row["route"] = route
+        if route and hints.get("states"):
+            row["route_state"] = hints["states"].get(route, row.get("route_state"))
+            row["recommended_for"] = list((hints.get("recommended_for") or {}).get(route, []))
+            row["route_preference"] = hints.get("preference")
+            row["dead_end"] = bool(hints.get("dead_end")) and route == "pccs"
+        else:
+            row.setdefault("route_state", None)
+            row["recommended_for"] = []
+
     def devices(self) -> list[dict]:
         result = self.files.devices()
+        for volume in result:
+            self._route(volume)
         self.last_connections = []
         for adapter in self.adapters.values():
             row = adapter.device()
             if row is not None:
+                self._route(row)
                 result.append(row)
                 self.last_connections.append(
                     {
@@ -87,7 +113,11 @@ class LocalTransports:
                             "firmware",
                             "evidence",
                             "configured_target",
+                            "route",
                             "route_state",
+                            "recommended_for",
+                            "route_preference",
+                            "dead_end",
                         )
                     }
                 )

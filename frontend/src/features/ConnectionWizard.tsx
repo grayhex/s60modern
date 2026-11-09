@@ -13,6 +13,7 @@ import {
   type RelayState,
 } from '../api/bridge';
 import CapabilityMatrix from '../components/CapabilityMatrix';
+import RouteChips from '../components/RouteChips';
 import { Card, ErrorMessage } from '../components/ui';
 import { Download } from '../components/workspace';
 import {
@@ -28,6 +29,7 @@ import {
   type WizardInput,
 } from '../wizard/model';
 import { buildReport } from '../wizard/report';
+import { routeOf } from '../wizard/routes';
 
 const ICON: Record<StepStatus, typeof CircleCheck> = {
   success: CircleCheck,
@@ -277,6 +279,15 @@ export default function ConnectionWizard() {
           <StepItem key={step.id} step={step} number={index + 1} current={index === first} />
         ))}
       </ol>
+      {phones.some((d) => routeOf(d)) && (
+        <ul className="route-list" aria-label={t('Routes to the phone', 'Маршруты к телефону')}>
+          {phones.map((d) => (
+            <li key={d.id}>
+              {d.name ?? d.model ?? d.id} <RouteChips device={d} />
+            </li>
+          ))}
+        </ul>
+      )}
       {connected.length > 0 && (
         <fieldset className="wizard-choice">
           <legend>{t('Choose the connection to use', 'Выберите подключение')}</legend>
@@ -290,7 +301,8 @@ export default function ConnectionWizard() {
               />{' '}
               {d.name ?? d.model ?? d.id} · {t(...MODE_TEXT[transportMode(d)])}
               {filesOnly(d) &&
-                ` — ${t('files only, not a phone identity', 'только файлы, не идентичность телефона')}`}
+                ` — ${t('files only, not a phone identity', 'только файлы, не идентичность телефона')}`}{' '}
+              <RouteChips device={d} />
             </label>
           ))}
         </fieldset>

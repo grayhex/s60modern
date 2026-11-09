@@ -7,6 +7,7 @@ import { useApi, usePreferences } from '../state/app';
 import { keys, useDevices } from '../api/queries';
 import { Card, DeviceSelect, ErrorMessage } from '../components/ui';
 import CapabilityMatrix from '../components/CapabilityMatrix';
+import RouteChips from '../components/RouteChips';
 import ConnectionWizard from './ConnectionWizard';
 import { objectSchema, text, entries, strings } from '../api/workspace';
 
@@ -197,6 +198,7 @@ export default function Connection() {
       {devices.data?.devices.map((row) => (
         <Card key={row.id}>
           <h2>{row.name ?? row.model ?? row.id}</h2>
+          <RouteChips device={row} />
           <p>{row.evidence}</p>
           <CapabilityMatrix device={row} />
           <button

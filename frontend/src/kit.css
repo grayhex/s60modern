@@ -948,3 +948,31 @@ a.k-btn {
   font-size: 12px;
   font-weight: 600;
 }
+/* Routes to the phone (Gammu, USB OBEX, MTP, Mass storage) */
+.route-list {
+  margin: 8px 0;
+  padding-left: 18px;
+}
+.route-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  vertical-align: middle;
+}
+.route-recommended {
+  border-color: var(--nokia-brand-border);
+  background: var(--nokia-brand-soft);
+  color: var(--nokia-brand);
+}
+.route-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  border-color: var(--nokia-brand-border);
+  background: var(--nokia-brand-soft);
+}
+.route-banner p {
+  margin: 0;
+  flex: 1 1 240px;
+}

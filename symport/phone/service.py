@@ -38,7 +38,7 @@ class DeviceManager:
                    'contacts-read', 'contacts-import', 'media-upload', 'software-transfer',
                    'apps-inventory', 'calendar-read', 'media-list', 'media-info', 'media-chunk', 'media-thumbnail',
                    'device-details', 'device-imei', 'personal-read', 'personal-preview', 'personal-apply',
-                   'personal-calendar-import', 'personal-export', 'personal-backup', 'personal-backup-download', 'sms-send', 'connection-diagnose', 'connection-status', 'connection-host', 'capabilities'}
+                   'personal-calendar-import', 'personal-export', 'personal-backup', 'personal-backup-download', 'sms-send', 'connection-diagnose', 'connection-status', 'connection-host', 'connection-select', 'capabilities'}
         if not isinstance(data.get('action'), str) or data['action'] not in allowed:
             raise ValueError('Unknown device operation')
         if data['action'] not in ('discover', 'history', 'connection-status', 'connection-host'):
@@ -69,6 +69,12 @@ class DeviceManager:
                     'backup': 'File backup covers only the selected folder, not contacts, SMS, applications or firmware',
                     'bluetooth': 'OBEX pairing and service discovery must run on the PC connected to the phone',
                 }}
+            if data.get('action') == 'connection-select':
+                # The user chose a route in the app. Nothing is sent to the phone; only the choice is journalled.
+                if data['device'] not in self.rows:
+                    raise ValueError('Unknown connection; discover the phone again')
+                self.record('connection-select', 'success')
+                return {'status': 'selected', 'device': data['device']}
             if data.get('action') == 'connection-host':
                 return self.transport.execute(data)
             if data.get('action') == 'connection-status':
