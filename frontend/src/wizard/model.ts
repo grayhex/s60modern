@@ -16,6 +16,9 @@ export const hostSchema = z.object({
       }),
     )
     .default([]),
+  portable: z
+    .array(z.object({ index: z.number().optional(), storages: z.array(z.string()).default([]) }))
+    .default([]),
   diagnostics: z.array(z.string()).default([]),
   environment: z
     .object({
@@ -144,10 +147,15 @@ const isLocal = (hostname: string) => ['localhost', '127.0.0.1', '[::1]', '::1']
 export const originProblem = (o: WizardInput['origin']) =>
   o.protocol !== 'https:' && !isLocal(o.hostname);
 
-export type Mode = 'pc-suite' | 'gammu' | 'mass-storage' | 'bluetooth' | 'obex-usb' | 'obex-opp';
+export type Mode =
+  'pc-suite' | 'gammu' | 'mass-storage' | 'mtp' | 'bluetooth' | 'obex-usb' | 'obex-opp';
+/** Connections that expose files only and never identify a phone (a drive letter, or Windows MTP). */
+export const filesOnly = (d: { transport?: string | null | undefined }) =>
+  d.transport === 'mounted-volume' || d.transport === 'wpd';
 /** The kind of link, from what the connection reports; never from a drive letter or a name. */
 export function transportMode(d: Device): Mode {
   if (d.transport === 'mounted-volume') return 'mass-storage';
+  if (d.transport === 'wpd') return 'mtp';
   if (d.transport === 'obex-opp') return 'obex-opp';
   if (d.transport === 'obexftp') return d.connection_kind === 'usb' ? 'obex-usb' : 'bluetooth';
   if (d.connection_kind === 'gammu-bluetooth' || d.connection_kind === 'gammu-s60')
@@ -159,12 +167,13 @@ export const MODE_TEXT: Record<Mode, [string, string]> = {
   'pc-suite': ['PC Suite (USB, Gammu)', 'PC Suite (USB, Gammu)'],
   gammu: ['Gammu connection', 'Подключение Gammu'],
   'mass-storage': ['Mass Storage (memory card files only)', 'Mass Storage (только файлы карты)'],
+  mtp: ['Windows MTP (files, read-only)', 'Windows MTP (файлы, только чтение)'],
   bluetooth: ['Bluetooth', 'Bluetooth'],
   'obex-usb': ['OBEX FTP over USB', 'OBEX FTP по USB'],
   'obex-opp': ['Bluetooth OPP (send only)', 'Bluetooth OPP (только отправка)'],
 };
 
-const phoneRows = (devices: Device[]) => devices.filter((d) => d.transport !== 'mounted-volume');
+const phoneRows = (devices: Device[]) => devices.filter((d) => !filesOnly(d));
 const PORT_REASONS = [
   'port-busy',
   'port-open',
@@ -444,7 +453,16 @@ export function computeSteps(input: WizardInput): Step[] {
       bluetooth = host.bluetooth.length,
       usb = host.usb;
     const counts = `COM ${serial} · ${t('drives', 'диски')} ${volumes} · USB ${usb.length} · Bluetooth ${bluetooth}`;
-    if (serial || volumes)
+    const portable = host.portable ?? [];
+    const mtpStorages = portable.reduce((n, p) => n + p.storages.length, 0);
+    if (!serial && !volumes && mtpStorages)
+      steps.push(
+        make('usb', usbTitle, 'success', [
+          `${counts}. Files are readable through Windows (MTP, read-only: ${mtpStorages} storage(s)). This is not PC Suite: contacts, calendar and SMS need the Nokia driver and a COM port.`,
+          `${counts}. Файлы читаются через Windows (MTP, только чтение: хранилищ ${mtpStorages}). Это не PC Suite: контактам, календарю и SMS нужны драйвер Nokia и COM-порт.`,
+        ]),
+      );
+    else if (serial || volumes)
       steps.push(
         make('usb', usbTitle, 'success', [
           `${counts}. Candidates only — a phone is confirmed when it answers (step 6).`,
@@ -589,6 +607,17 @@ export function computeSteps(input: WizardInput): Step[] {
       make('driver', driverTitle, 'unsupported', [
         'No PC Suite COM port: only the memory card (Mass Storage) is available — files only, no contacts, SMS, calendar or installed-app list.',
         'Нет COM-порта PC Suite: доступна только карта памяти (Mass Storage) — только файлы, без контактов, SMS, календаря и списка приложений.',
+      ]),
+    );
+  else if (
+    host !== 'error' &&
+    (host.portable ?? []).some((p) => p.storages.length) &&
+    !host.serial.length
+  )
+    steps.push(
+      make('driver', driverTitle, 'unsupported', [
+        'No PC Suite COM port: only files over Windows MTP (read-only). Contacts, calendar and SMS need the Nokia Connectivity Cable driver (installed by you) and PC Suite mode.',
+        'Нет COM-порта PC Suite: доступны только файлы по MTP Windows (чтение). Контактам, календарю и SMS нужны драйвер Nokia Connectivity Cable (ставите вы) и режим PC Suite.',
       ]),
     );
   else
@@ -951,7 +980,7 @@ export function computeLevels(input: WizardInput): Levels {
   return {
     bridge: input.connection?.mode === 'direct' || Boolean(input.connection?.connected),
     usb: Boolean(host && (host.serial.length || host.volumes.length || host.usb.length)),
-    identified: devices.some((d) => d.transport !== 'mounted-volume' && d.connected && d.model),
+    identified: devices.some((d) => !filesOnly(d) && d.connected && d.model),
     service: ops.some((s) => s.status === 'available'),
     operation: ops.some((s) => s.source === 'observed-operation'),
   };

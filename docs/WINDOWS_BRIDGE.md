@@ -124,6 +124,7 @@ It reads the safe report the running Bridge keeps current and shows **separate**
 |---|---|---|
 | `no-usb` | Windows sees no Nokia on USB | data cable (not charge-only), unlock the phone, choose PC Suite, another port, close Nokia Suite |
 | `usb-driver-problem` | Nokia on USB, Device Manager reports a problem | open Device Manager (button); the Nokia PC Suite / Connectivity driver is needed — install it yourself from Nokia/Microsoft |
+| `mtp-files` | Windows lists the phone's storages as a Portable Device (MTP): files are readable (read-only); no contacts/calendar/SMS | open the SymPort file manager; for PIM install the Nokia driver yourself and choose PC Suite; for changing files choose Mass storage |
 | `mtp-only` | Windows shows the phone only as a media device (class WPD/MTP): no COM port, no drive letter — what a Nokia E72 reported on Windows 11 | for files choose Mass storage on the phone (SymPort does not read MTP yet); for contacts/calendar/SMS the Nokia PC Suite / Connectivity Cable driver must provide a COM port — install it yourself, choose PC Suite, replug |
 | `no-com` | driver fine, but no COM port | switch the phone to PC Suite (not Mass storage / Media transfer), replug |
 | `com-busy` | the Nokia COM port is held by another program | close Nokia Suite / Ovi Suite / terminals |
@@ -142,6 +143,30 @@ Rescan. A Windows PnP record alone is never shown as “Connected”.
 
 The USB list shows each Nokia node's class (e.g. `WPD`, `Ports`, `Modem`), the composite-interface number and Device Manager's error code (28 = no driver installed). The copied text contains versions, VID:PID, statuses and counts only — no IMEI, USB serial numbers or PnP instance IDs,
 paths, addresses (the SymPort URL is reduced to its scheme), keys, tokens, contacts or SMS.
+
+
+### Three independent routes
+
+The Doctor shows three routes side by side; none implies another, and a missing one is never reported as the only dead end:
+
+| Route | What it gives | What it needs |
+|---|---|---|
+| **Files over MTP** (Windows Portable Devices) | browse and download files, **read-only** | the phone shown by Windows as a portable device (`WPD`, e.g. Nokia E72 `0421:0223`); no Nokia driver, no COM port |
+| **Mass storage** (drive letter) | files and backups, including writes with the usual confirmations | “Mass storage” mode on the phone |
+| **PC Suite** (Gammu, COM or DKU-2) | identity, contacts, calendar, SMS — only what the capability matrix proves | the Nokia Connectivity Cable driver (installed by you) and “PC Suite” mode |
+
+**MTP.** The Bridge uses the Windows shell's own Portable Device support to list storages (“Phone memory”, “Memory card”),
+browse folders and copy a file to a private temporary folder, which is read and deleted. It never replaces or intercepts a
+Windows driver. Uploading, deleting and creating folders are **not implemented** for MTP (they need verification on a real
+phone first); the capability matrix marks them unsupported and every PIM operation unsupported. A `wpd-nokia` connection
+never reports a phone model, firmware or identity, and nothing becomes `available` until Windows actually listed a storage.
+**Not yet verified on a physical phone** — see the hardware checklist.
+
+**Nokia-specific Gammu connection without COM.** When Windows shows a working Nokia USB device but no COM port, the Bridge
+makes one short, read-only Gammu `identify` over `connection = dku2` and then `dku2phonet` (the Nokia-specific Windows
+connections that find the device through the Nokia driver). It is repeated only when the USB device set changes or you press
+Rescan; a silent phone just records “no response”. Whether a given phone answers this way with the installed driver is not
+guaranteed and not verified for the E72/Windows 11 combination.
 
 **Drivers.** SymPort never installs, downloads or replaces drivers, never asks you to disable driver signature enforcement
 or Secure Boot, and never installs anything silently. If the Nokia driver is missing, the Doctor says so and points to the

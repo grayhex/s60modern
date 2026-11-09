@@ -90,6 +90,21 @@ PHONE: dict[str, tuple[str, Text, Text | None]] = {
             "скрыто и не скачивает «драйверпаки». Работа с файлами может быть доступна в режиме «Накопитель».",
         ),
     ),
+    "mtp-files": (
+        INFO,
+        (
+            "The phone's files are available through Windows (MTP, read-only). Contacts, calendar and SMS are not.",
+            "Файлы телефона доступны через Windows (MTP, только чтение). Контакты, календарь и SMS — нет.",
+        ),
+        (
+            "Open the file manager in SymPort. For contacts, calendar and SMS the Nokia PC Suite / Nokia Connectivity Cable "
+            "driver has to provide a COM port (install it yourself from Nokia/Microsoft, choose “PC Suite”, replug). "
+            "For changing files choose “Mass storage” on the phone (writes are not available over MTP).",
+            "Откройте файловый менеджер в SymPort. Для контактов, календаря и SMS COM-порт должен дать драйвер Nokia PC Suite / "
+            "Nokia Connectivity Cable (ставится вручную у Nokia/Microsoft; выберите «PC Suite» и переподключите кабель). "
+            "Для изменения файлов выберите на телефоне «Mass storage» (запись по MTP не поддерживается).",
+        ),
+    ),
     "mtp-only": (
         WARN,
         (
@@ -284,6 +299,8 @@ def classify_phone(host: dict, com: dict[str, str], identified: int) -> str:
         return "mass-storage-only"
     if usb and any(row.get("status") == "problem" for row in usb):
         return "usb-driver-problem"
+    if any(p.get("storages") for p in host.get("portable") or []):
+        return "mtp-files"
     if usb and any(str(row.get("class")).upper() == "WPD" for row in usb) and not any(
         str(row.get("class")).lower() in ("ports", "modem") for row in usb
     ):
@@ -307,8 +324,58 @@ def classify_link(relay: dict | None) -> str:
     return "connecting"
 
 
+def routes(host: dict, com: dict[str, str], identified: int, dku2: str) -> list[dict]:
+    """The three independent ways to a Nokia, each with its own state. None of them implies another."""
+    usb = host.get("usb") or []
+    portable = host.get("portable") or []
+    storages = sum(len(p.get("storages") or []) for p in portable)
+    wpd_class = any(str(r.get("class")).upper() == "WPD" for r in usb)
+    if storages:
+        mtp = (OK, ("Files over Windows Portable Devices (MTP): available, read-only",
+                    "Файлы через Windows Portable Devices (MTP): доступны, только чтение"), None)
+    elif portable or wpd_class:
+        mtp = (WARN, ("Windows shows a portable device but no readable storage",
+                      "Windows показывает переносное устройство, но хранилище недоступно"),
+               ("Unlock the phone and choose “Media transfer” or “PC Suite”, then press “Rescan”.",
+                "Разблокируйте телефон, выберите «Передача медиа» или «PC Suite» и нажмите «Повторить поиск»."))
+    else:
+        mtp = (INFO, ("Files over MTP: no portable device", "Файлы через MTP: переносного устройства нет"), None)
+    if host.get("volumes"):
+        mass = (OK, ("Mass storage (drive letter): available", "Mass storage (буква диска): доступен"), None)
+    else:
+        mass = (INFO, ("Mass storage (drive letter): not active", "Mass storage (буква диска): не активен"),
+                ("Choose “Mass storage” on the phone for a drive letter (files and backups only).",
+                 "Выберите на телефоне «Mass storage», чтобы получить букву диска (только файлы и копии)."))
+    if identified > 0:
+        pc = (OK, ("PC Suite / contacts and calendar: the phone answered", "PC Suite / контакты и календарь: телефон ответил"), None)
+    elif "busy" in com.values():
+        pc = (FAIL, ("PC Suite: the COM port is busy", "PC Suite: COM-порт занят"),
+              ("Close Nokia Suite / Ovi Suite and terminal programs, then rescan.",
+               "Закройте Nokia Suite / Ovi Suite и терминальные программы, затем повторите поиск."))
+    elif host.get("serial"):
+        pc = (WARN, ("PC Suite: a COM port exists but the phone did not answer", "PC Suite: COM-порт есть, но телефон не ответил"),
+              ("Unlock the phone, keep “PC Suite” mode and rescan.", "Разблокируйте телефон, оставьте «PC Suite» и повторите поиск."))
+    elif dku2 == "no-response":
+        pc = (WARN, ("PC Suite: no COM port, and the Nokia-specific Gammu connection (DKU-2) did not answer",
+                     "PC Suite: COM-порта нет, и Nokia-специфичное подключение Gammu (DKU-2) не ответило"),
+              ("The Nokia Connectivity Cable driver is most likely missing or the phone is not in “PC Suite” mode. Install the "
+               "driver yourself from Nokia/Microsoft, choose “PC Suite”, replug and rescan. Whether a given phone answers over "
+               "DKU-2 is not guaranteed.",
+               "Скорее всего, нет драйвера Nokia Connectivity Cable или телефон не в режиме «PC Suite». Поставьте драйвер сами "
+               "(у Nokia/Microsoft), выберите «PC Suite», переподключите кабель и повторите поиск. Ответ телефона по DKU-2 "
+               "не гарантирован."))
+    else:
+        pc = (INFO, ("PC Suite / contacts and calendar: not available", "PC Suite / контакты и календарь: недоступны"),
+              ("Needs the Nokia Connectivity Cable driver and “PC Suite” mode.",
+               "Нужен драйвер Nokia Connectivity Cable и режим «PC Suite»."))
+    return [
+        {"id": identifier, "status": status, "summary": list(summary), "action": list(action) if action else None}
+        for identifier, (status, summary, action) in (("mtp-files", mtp), ("mass-storage", mass), ("pc-suite", pc))
+    ]
+
+
 def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | None = None, origin: str | None = None,
-             parts: list[dict] | None = None) -> dict:
+             parts: list[dict] | None = None, dku2: str = "not-tried") -> dict:
     """The complete report. `host` is symport.bridge.discovery.host_candidates(); `relay` is OutboundRelay.public_state()."""
     usb = host.get("usb") or []
     problems = [row for row in usb if row.get("status") == "problem"]
@@ -357,6 +424,8 @@ def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | Non
         "frozen": bool(getattr(sys, "frozen", False)),
         "phone": {"code": phone_code, "status": status, "summary": list(summary), "action": list(action) if action else None},
         "checks": checks,
+        "routes": routes(host, com, identified, dku2),
+        "dku2": dku2.split(":")[0],
         "usb": [{k: row.get(k) for k in ("vid", "pid", "class", "status", "mi", "problem_code")} for row in usb],
         "com": [{"state": state} for state in com.values()],
         "link": {
@@ -387,6 +456,7 @@ def export_text(report: dict) -> str:
         "Checks:",
     ]
     lines += [f"  [{c['status']}] {c['id']}: {c['summary'][0]}" for c in report["checks"]]
+    lines += ["", "Routes:"] + [f"  [{r['status']}] {r['id']}: {r['summary'][0]}" for r in report.get("routes", [])]
     lines += ["", "Nokia USB devices (VID:PID class status):"]
     lines += [
         f"  {u['vid']}:{u['pid']} {u['class']} {u['status']}"
@@ -444,6 +514,8 @@ def window_model(report: dict, russian: bool) -> dict:
         + ((" (сертификат закреплён)" if russian else " (certificate pinned)") if link["code"] == "connected" and link["pinned"] else ""),
         "link_action": link["action"][pick] if link["action"] else "",
         "link_origin": link.get("origin"),
-        "rows": [(MARKS[c["status"]], c["summary"][pick]) for c in report["checks"]]
+        "rows": [(MARKS[r["status"]], r["summary"][pick]) for r in report.get("routes", [])]
+        + [("", "")]
+        + [(MARKS[c["status"]], c["summary"][pick]) for c in report["checks"]]
         + [_component_row(p, russian) for p in report["components"]],
     }

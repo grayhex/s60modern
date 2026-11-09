@@ -27,7 +27,7 @@ subprocess.run([str(out / 'portable/SymPortBridge.exe'), '--self-test', '--repor
 report = json.loads((out / 'self-test.json').read_text())
 assert report['gammu'].get('gammu'), report
 assert report['credential_protection'] == 'passed', report
-assert report['ca_pinning'] == 'passed' and report['doctor'] == 'passed', report  # no `cryptography` in the exe
+assert report['ca_pinning'] == 'passed' and report['doctor'] == 'passed' and report['wpd'] == 'passed', report  # no `cryptography` in the exe
 assert all(report['components'][n] for n in ('pyserial', 'Pillow', 'pystray', 'Tk')), report
 print(json.dumps(report))
 print('Frozen bridge worker, DPAPI and authenticated HTTP checks passed')

@@ -10,6 +10,7 @@ from .connections import load_profiles
 from .files import MountedVolumes
 from .gammu_adapter import GammuAdapter
 from .obex import ObexAdapter
+from .wpd import WpdAdapter
 
 
 class LocalTransports:
@@ -33,6 +34,10 @@ class LocalTransports:
         except (ValueError, OSError):
             self.configuration_error = "Connection configuration is invalid; existing mounted-volume and legacy Gammu settings remain available"
             self.adapters = {"gammu": self.gammu}
+        if os.name == "nt" and os.getenv("SYMPORT_WPD", "1") != "0":
+            # A Nokia that Windows shows as a Portable Device (MTP): read-only file access, no PIM, never a phone identity.
+            self.wpd = WpdAdapter()
+            self.adapters[self.wpd.id] = self.wpd
         self.last_connections = []
 
     @property

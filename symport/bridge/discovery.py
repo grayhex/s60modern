@@ -236,6 +236,24 @@ def usb_devices(sysfs: str = "/sys/bus/usb/devices"):
     return list(unique.values()), None
 
 
+def portable_devices():
+    """Nokia Portable Devices (MTP/WPD) the Windows shell lists, with their storage names. Read-only."""
+    if os.name != "nt":
+        return [], None
+    from symport.phone import wpd
+
+    try:
+        rows = wpd.run_powershell(wpd.PROBE, {}, timeout=40)
+    except ValueError:
+        return [], "Windows Portable Devices could not be enumerated"
+    rows = rows if isinstance(rows, list) else []
+    return [
+        {"index": int(r.get("index", 0)), "storages": [wpd.clean(x) for x in (r.get("storages") or [])][:16]}
+        for r in rows[:4]
+        if isinstance(r, dict)
+    ], None
+
+
 def host_candidates():
     import platform
 
@@ -247,14 +265,16 @@ def host_candidates():
     bluetooth, bluetooth_reason = paired_bluetooth_candidates()
     volumes, volume_reason = windows_nokia_volumes()
     usb, usb_reason = usb_devices()
+    portable, portable_reason = portable_devices()
     # Do not expose physical PNP identifiers, even hashed ones, to the browser.
     return {
         "serial": serial,
         "bluetooth": bluetooth,
         "volumes": [{k: v for k, v in r.items() if k != "identity"} for r in volumes],
         "usb": usb,
+        "portable": portable,
         "diagnostics": [
-            r for r in (serial_reason, bluetooth_reason, volume_reason, usb_reason) if r
+            r for r in (serial_reason, bluetooth_reason, volume_reason, usb_reason, portable_reason) if r
         ],
         "environment": {
             "bridge_version": VERSION,

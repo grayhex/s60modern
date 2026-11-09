@@ -226,6 +226,44 @@ describe('first-connection wizard steps', () => {
     expect(driver.fixes.join(' ')).toMatch(/does not install/);
   });
 
+  it('does not call a readable MTP phone a dead end, and never a phone identity', () => {
+    const input = base({
+      devices: [],
+      host: host({
+        usb: [{ vid: '0421', pid: '0223', class: 'WPD', status: 'ok' }],
+        portable: [{ index: 0, storages: ['Phone memory', 'Memory card'] }],
+      }),
+    });
+    const usb = step(input, 'usb');
+    expect(usb.status).toBe('success');
+    expect(usb.summary).toMatch(/MTP/);
+    expect(usb.summary).toMatch(/not PC Suite/);
+    const driver = step(input, 'driver');
+    expect(driver.status).toBe('unsupported');
+    expect(driver.summary).toMatch(/Contacts, calendar and SMS/);
+    const files = deviceSchema.parse({
+      id: 'wpd-nokia',
+      transport: 'wpd',
+      connected: true,
+      model: null,
+      capabilities: [],
+    });
+    expect(transportMode(files)).toBe('mtp');
+    expect(step({ ...input, devices: [files] }, 'identify').status).not.toBe('success');
+    // WPD without readable storage keeps the cautionary driver/mode advice
+    const locked = step(
+      base({
+        devices: [],
+        host: host({
+          usb: [{ vid: '0421', pid: '0223', class: 'WPD', status: 'ok' }],
+          portable: [{ index: 0, storages: [] }],
+        }),
+      }),
+      'usb',
+    );
+    expect(locked.code).toBe('mtp-only');
+  });
+
   it('keeps USB candidates apart from a confirmed phone', () => {
     const input = base({ devices: [], host: host({ serial: [{ port: 'COM3' }] }) });
     expect(step(input, 'usb').summary).toMatch(/Candidates only/);
