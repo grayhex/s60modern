@@ -26,11 +26,11 @@ Home NAS on a trusted LAN (UGREEN, Synology, Portainer): **Home LAN mode is the 
 an SSH tunnel set `SYMPORT_BIND=<NAS LAN IP>` and your own `SYMPORT_ADMIN_PASSWORD` (`SYMPORT_ACCESS_MODE=lan` is preset;
 `compose.yaml`/`tools/install.sh` stay localhost-only)
 (or `SYMPORT_ADMIN_PASSWORD_FILE` / `SYMPORT_ADMIN_PASSWORD_HASH`). SymPort then serves a login screen at
-`http://<nas-ip>:8765/`, accepts only that exact Host/Origin, requires a session (HttpOnly, SameSite=Strict cookie, CSRF
+`https://<nas-ip>:8765/` (HTTPS from SymPort's own local CA by default; `SYMPORT_TLS`, `SYMPORT_TLS_CERT_FILE`/`_KEY_FILE`), accepts only that exact Host/Origin, requires a session (HttpOnly, SameSite=Strict cookie, CSRF
 token, idle/absolute expiry, login rate limit) for every API, media and file route, and **refuses to start** on a missing,
-weak or default password, on `SYMPORT_BIND=0.0.0.0` without an exact `SYMPORT_LAN_HOST`, or on a loopback bind. Plain HTTP
-does not protect the password, cookie or phone data from someone sniffing the network: use it only on a trusted network, or
-put an HTTPS reverse proxy in front (`SYMPORT_PUBLIC_ORIGIN`). Never forward the port on your router.
+weak or default password, on `SYMPORT_BIND=0.0.0.0` without an exact `SYMPORT_LAN_HOST`, or on a loopback bind. With `SYMPORT_TLS=off` (plain HTTP) the password, cookie and phone data are readable on the network and the Windows Bridge
+cannot pair; behind an HTTPS reverse proxy (`SYMPORT_PUBLIC_ORIGIN`) the proxy terminates TLS. Install the CA from the login page once
+on the browser/Bridge computer (see DEPLOY_PORTAINER.md). Never forward the port on your router.
 Step-by-step guide, recovery and switching back: [DEPLOY_PORTAINER.md](DEPLOY_PORTAINER.md#4-ugreen--portainer-home-lan-без-ssh-и-прокси).
 Windows Bridge pairing keeps its own short-lived credentials; `/api/bridge-relay/*` never bypasses the login for other routes.
 

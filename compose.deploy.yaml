@@ -46,6 +46,10 @@ services:
       SYMPORT_ADMIN_PASSWORD: ${SYMPORT_ADMIN_PASSWORD:-}
       SYMPORT_ADMIN_PASSWORD_HASH: ${SYMPORT_ADMIN_PASSWORD_HASH:-}
       SYMPORT_ADMIN_PASSWORD_FILE: ${SYMPORT_ADMIN_PASSWORD_FILE:-}
+      # HTTPS in Home LAN mode (auto = on, with SymPort's own local CA; download it from the login page).
+      SYMPORT_TLS: ${SYMPORT_TLS:-auto}
+      SYMPORT_TLS_CERT_FILE: ${SYMPORT_TLS_CERT_FILE:-}
+      SYMPORT_TLS_KEY_FILE: ${SYMPORT_TLS_KEY_FILE:-}
       SYMPORT_SESSION_IDLE_MINUTES: ${SYMPORT_SESSION_IDLE_MINUTES:-}
       SYMPORT_SESSION_MAX_MINUTES: ${SYMPORT_SESSION_MAX_MINUTES:-}
       SYMPORT_CONNECTIONS_FILE: ${SYMPORT_CONNECTIONS_FILE:-}
@@ -67,7 +71,7 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
     healthcheck:
-      test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('SYMPORT_HTTP_PORT','8765')+'/healthz', timeout=3).read()"]
+      test: ["CMD", "python", "-m", "symport.healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3

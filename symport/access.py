@@ -125,6 +125,10 @@ class AccessConfig:
     public_origin: str = ""
     idle_seconds: int = 2 * 3600
     absolute_seconds: int = 12 * 3600
+    tls: bool = False  # SymPort itself serves HTTPS (Home LAN default)
+    tls_cert: str = ""  # operator-supplied certificate; empty = SymPort's own local CA
+    tls_key: str = ""
+    tls_dir: str = ""
     warnings: tuple[str, ...] = field(default=(), compare=False)
 
     @property
@@ -147,7 +151,8 @@ class AccessConfig:
     def allowed_origins(self) -> frozenset[str]:
         """Exact browser Origin values: plain http for the local/LAN address, https for the public proxy."""
         extra = {self.public_origin} if self.public_origin else set()
-        return frozenset(f"http://{host}" for host in self._plain_hosts) | extra
+        scheme = "https" if self.tls else "http"
+        return frozenset(f"{scheme}://{host}" for host in self._plain_hosts) | extra
 
 
 def _origin(value: str) -> str:
@@ -177,6 +182,17 @@ def load_access_config(env: dict[str, str] | None = None, *, port: int) -> Acces
         raise AccessConfigError(f"SYMPORT_HTTP_PORT={http_port} does not match the listening port {port}")
     if not 1 <= port <= 65535:
         raise AccessConfigError("Invalid port")
+
+    tls_setting = env.get("SYMPORT_TLS", "").strip().lower() or "auto"
+    if tls_setting not in ("auto", "on", "off"):
+        raise AccessConfigError("SYMPORT_TLS must be 'auto', 'on' or 'off'")
+    tls_cert = env.get("SYMPORT_TLS_CERT_FILE", "").strip()
+    tls_key = env.get("SYMPORT_TLS_KEY_FILE", "").strip()
+    if bool(tls_cert) != bool(tls_key):
+        raise AccessConfigError("Set both SYMPORT_TLS_CERT_FILE and SYMPORT_TLS_KEY_FILE, or neither")
+    if mode == MODE_LOCALHOST and (tls_setting == "on" or tls_cert):
+        raise AccessConfigError("SYMPORT_TLS applies to Home LAN mode; Localhost mode is served on loopback "
+                                "(use an HTTPS reverse proxy with SYMPORT_PUBLIC_ORIGIN for HTTPS)")
 
     if mode == MODE_LOCALHOST:
         if not _is_loopback(published) and not public:
@@ -224,8 +240,11 @@ def load_access_config(env: dict[str, str] | None = None, *, port: int) -> Acces
     else:
         raise AccessConfigError("Home LAN mode requires an admin password: set SYMPORT_ADMIN_PASSWORD "
                                 "(or SYMPORT_ADMIN_PASSWORD_FILE). The server will not start without one.")
-    if not public:
-        warnings.append("Plain HTTP: the password, session cookie and phone data can be read by anyone who can "
+    # HTTPS is the default for Home LAN: the Windows Bridge pairs only with an https origin. Behind an HTTPS
+    # reverse proxy (SYMPORT_PUBLIC_ORIGIN) the proxy terminates TLS, so SymPort serves plain HTTP to it.
+    tls = tls_setting == "on" or (tls_setting == "auto" and not public)
+    if not public and not tls:
+        warnings.append("Plain HTTP (SYMPORT_TLS=off): the Windows Bridge cannot pair with it, and the password, session cookie and phone data can be read by anyone who can "
                         "capture traffic on this network. Use only on a network you trust, or put an HTTPS "
                         "reverse proxy in front and set SYMPORT_PUBLIC_ORIGIN.")
 
@@ -244,7 +263,7 @@ def load_access_config(env: dict[str, str] | None = None, *, port: int) -> Acces
     idle = seconds("SYMPORT_SESSION_IDLE_MINUTES", 2 * 3600, 5 * 60, 24 * 3600)
     absolute = seconds("SYMPORT_SESSION_MAX_MINUTES", 12 * 3600, 5 * 60, 7 * 24 * 3600)
     return AccessConfig(MODE_LAN, published, port, tuple(hosts), encoded, public, idle, max(idle, absolute),
-                        tuple(warnings))
+                        tls, tls_cert, tls_key, env.get("SYMPORT_TLS_DIR", "").strip(), tuple(warnings))
 
 
 @dataclass

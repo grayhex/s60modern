@@ -380,10 +380,15 @@ def main(argv=None):
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--port", type=int, default=24652)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--settings", action="store_true", help="open the settings window (used by the tray)")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test(args.report)
+    if args.settings:
+        from .tray import settings_window
+
+        return settings_window((args.data_dir or data_directory()).absolute(), args.port)
     if not args.headless and not claim_single_instance():
         if os.name == "nt":
             import ctypes
@@ -441,4 +446,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

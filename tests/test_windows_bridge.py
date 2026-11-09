@@ -228,3 +228,19 @@ def test_backend_pairing_lease_requires_owner_and_revokes(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(3)
+
+
+def test_settings_window_runs_in_its_own_process(tmp_path, monkeypatch):
+    """Tk used to share a thread with the tray icon and the window could not be closed. It now owns a process."""
+    import sys
+
+    from symport.bridge import main as bridge_main
+    from symport.bridge import tray
+
+    command = tray.settings_command(tmp_path, 24652)
+    assert command[0] == sys.executable and "--settings" in command
+    assert command[command.index("--data-dir") + 1] == str(tmp_path) and command[-1] == "24652"
+    seen = {}
+    monkeypatch.setattr(tray, "settings_window", lambda root, port: seen.update(root=root, port=port) or tray.SETTINGS_SAVED)
+    assert bridge_main.main(["--settings", "--data-dir", str(tmp_path), "--port", "24999"]) == tray.SETTINGS_SAVED
+    assert seen == {"root": tmp_path.absolute(), "port": 24999}

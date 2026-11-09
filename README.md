@@ -47,9 +47,10 @@ SymPort. Другой порт задаётся в `.env` через `SYMPORT_HT
 `tools/install.sh --check`. [Установка, хранение данных и HTTPS](docs/DOCKER_DEPLOYMENT.md)
 
 Основной сценарий для домашнего NAS — **Home LAN** (режим по умолчанию в `compose.deploy.yaml`): задайте `SYMPORT_BIND=<IP NAS>`
-и собственный `SYMPORT_ADMIN_PASSWORD`, и SymPort покажет экран входа по адресу `http://<IP-NAS>:8765/` — без SSH и прокси. Без
-пароля и адреса контейнер не запускается и пишет причину; данные работают по обычному HTTP, поэтому порт нельзя пробрасывать на
-роутере и открывать в интернет. Пошагово для UGREEN/Portainer: [DEPLOY_PORTAINER.md](docs/DEPLOY_PORTAINER.md#4-ugreen--portainer-home-lan-без-ssh-и-прокси).
+и собственный `SYMPORT_ADMIN_PASSWORD`, и SymPort покажет экран входа по адресу `https://<IP-NAS>:8765/` — без SSH и прокси. Без
+пароля и адреса контейнер не запускается и пишет причину. HTTPS включён по умолчанию (свой локальный CA: сертификат
+скачивается с экрана входа и ставится на компьютер один раз — это нужно и для сопряжения с Windows Bridge); порт нельзя пробрасывать
+на роутере и открывать в интернет. Пошагово для UGREEN/Portainer: [DEPLOY_PORTAINER.md](docs/DEPLOY_PORTAINER.md#4-ugreen--portainer-home-lan-без-ssh-и-прокси).
 Установка через `tools/install.sh` (`compose.yaml`) остаётся локальной: порт на loopback хоста, доступ по SSH-туннелю либо
 HTTPS-прокси с аутентификацией (`SYMPORT_ACCESS_MODE=localhost` в Compose-файле для NAS).
 

@@ -29,23 +29,30 @@ echo "--- Home LAN mode on $ip"
 docker run -d --name "$name" -e SYMPORT_ACCESS_MODE=lan -e SYMPORT_BIND="$ip" -e SYMPORT_ADMIN_PASSWORD="$password" \
   -p "$ip:8765:8765" "$image" >/dev/null
 for _ in $(seq 1 40); do
-  if docker exec "$name" python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=2).read()" 2>/dev/null; then ready=1; break; fi
+  if docker exec "$name" python -m symport.healthcheck 2>/dev/null; then ready=1; break; fi
   sleep 2
 done
 test "${ready:-0}" -eq 1
-base="http://$ip:8765"
-login_page="$(curl --fail --silent "$base/")"
+base="https://$ip:8765"   # Home LAN serves HTTPS by default (local CA); -k below only skips trust for the smoke test
+login_page="$(curl --fail --silent -k "$base/")"
 grep -q 'login.js' <<<"$login_page"
 ! grep -q 'symport-token' <<<"$login_page"
-test "$(curl -s -o /dev/null -w '%{http_code}' "$base/api/state")" = 401
-test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example:8765' "$base/api/state")" = 403
-test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H "Origin: $base" -d '{"password":"wrong-wrong-wrong"}' "$base/api/auth/login")" = 401
+test "$(curl -sk -o /dev/null -w '%{http_code}' "$base/api/state")" = 401
+test "$(curl -sk -o /dev/null -w '%{http_code}' -H 'Host: evil.example:8765' "$base/api/state")" = 403
+test "$(curl -sk -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H "Origin: $base" -d '{"password":"wrong-wrong-wrong"}' "$base/api/auth/login")" = 401
 jar="$(mktemp)"
-test "$(curl -s -o /dev/null -w '%{http_code}' -c "$jar" -H 'Content-Type: application/json' -H "Origin: $base" -d "{\"password\":\"$password\"}" "$base/api/auth/login")" = 200
+test "$(curl -sk -o /dev/null -w '%{http_code}' -c "$jar" -H 'Content-Type: application/json' -H "Origin: $base" -d "{\"password\":\"$password\"}" "$base/api/auth/login")" = 200
 grep -q HttpOnly "$jar"
-curl --fail --silent -b "$jar" "$base/api/state" | python3 -c 'import json,sys; assert json.load(sys.stdin)["schema"]=="symport.web/1"'
-workspace="$(curl --fail --silent -b "$jar" "$base/")"
+curl --fail --silent -k -b "$jar" "$base/api/state" | python3 -c 'import json,sys; assert json.load(sys.stdin)["schema"]=="symport.web/1"'
+workspace="$(curl --fail --silent -k -b "$jar" "$base/")"
 grep -q 'name="symport-auth" content="lan"' <<<"$workspace"
+# the local CA is published, the private key never is; and the same certificate really verifies against that CA
+curl --fail --silent -k "$base/symport-ca.crt" -o /tmp/symport-ca.crt
+grep -q 'BEGIN CERTIFICATE' /tmp/symport-ca.crt
+! grep -q 'PRIVATE' /tmp/symport-ca.crt
+curl --fail --silent --cacert /tmp/symport-ca.crt "$base/healthz" | grep -q ok
+# plain HTTP to the TLS port is not answered
+! curl --silent --max-time 3 "http://$ip:8765/healthz" | grep -q ok
 # the LAN port is not published on loopback
 ! curl --silent --max-time 3 "http://127.0.0.1:8765/healthz" >/dev/null
 status="$(docker inspect --format '{{.State.Status}}' "$name")"

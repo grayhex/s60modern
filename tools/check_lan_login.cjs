@@ -1,6 +1,8 @@
-// Home LAN mode in a real browser: the login screen, wrong password, a successful sign-in to the workspace,
+// Home LAN mode (HTTPS) in a real browser: the login screen, wrong password, a successful sign-in to the workspace,
 // sign-out, and the screen shown after the session ended. Runs the real Python server bound to this machine's
 // LAN address (a non-loopback IPv4 address is required; the check is skipped when there is none).
+// The server is started with HTTPS (the Home LAN default); the test trusts it without installing the CA.
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 const { chromium } = require("playwright");
 const assert = require("assert/strict");
 const { spawn } = require("child_process");
@@ -14,18 +16,21 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "symport-lan-"));
 for (const name of ["theme", "tools", "profiles", "catalog"]) fs.cpSync(path.join(repo, name), path.join(root, name), { recursive: true });
 const server = spawn(python, ["-m", "symport.web", "--host", HOST, "--port", String(PORT), "--repo", root], {
   cwd: repo, stdio: ["ignore", "ignore", "inherit"],
-  env: { ...process.env, PYTHONPATH: repo, SYMPORT_ACCESS_MODE: "lan", SYMPORT_BIND: HOST, SYMPORT_HTTP_PORT: String(PORT),
+  env: { ...process.env, PYTHONPATH: repo, SYMPORT_ACCESS_MODE: "lan", SYMPORT_BIND: HOST, SYMPORT_HTTP_PORT: String(PORT), SYMPORT_TLS: "on", SYMPORT_TLS_DIR: path.join(root, "tls"),
          SYMPORT_ADMIN_PASSWORD: PASSWORD, SYMPORT_DEVICE_ROOTS: "{}", SYMPORT_MGO_URL: "", SYMPORT_BRIDGE_URL: "" },
 });
-const base = `http://${HOST}:${PORT}`;
+const base = `https://${HOST}:${PORT}`;
 (async () => {
   let browser;
   try {
     for (let i = 0; i < 60; i++) { try { if ((await fetch(base + "/healthz")).ok) break; } catch { /* starting */ } await new Promise((r) => setTimeout(r, 250)); }
     assert.equal((await fetch(base + "/api/state")).status, 401, "API is closed before sign-in");
-    browser = await chromium.launch({ headless: true, ...(process.env.SYMPORT_BROWSER_EXECUTABLE ? { executablePath: process.env.SYMPORT_BROWSER_EXECUTABLE } : {}), args: ["--no-sandbox"] });
+    const ca = await fetch(base + "/symport-ca.crt");
+    assert.equal(ca.status, 200);
+    assert((await ca.text()).includes("BEGIN CERTIFICATE"), "the local CA can be downloaded");
+    browser = await chromium.launch({ headless: true, ...(process.env.SYMPORT_BROWSER_EXECUTABLE ? { executablePath: process.env.SYMPORT_BROWSER_EXECUTABLE } : {}), args: ["--no-sandbox", "--no-proxy-server"] });
     for (const [lang, labels] of [["en", { submit: "Sign in", wrong: "Wrong password." }], ["ru", { submit: "Войти", wrong: "Неверный пароль." }]]) {
-      const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: lang });
+      const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: lang, ignoreHTTPSErrors: true });
       const page = await context.newPage();
       page.setDefaultTimeout(15000);
       page.errors = [];
@@ -44,7 +49,7 @@ const base = `http://${HOST}:${PORT}`;
         await page.locator(".sidebar").waitFor();           // the workspace itself
         const cookies = await context.cookies();
         const session = cookies.find((c) => c.name === "symport_session");
-        assert(session && session.httpOnly && session.sameSite === "Strict", "session cookie is HttpOnly + SameSite=Strict");
+        assert(session && session.httpOnly && session.sameSite === "Strict" && session.secure, "session cookie is HttpOnly + Secure + SameSite=Strict");
         assert.equal(await page.evaluate(() => document.cookie.includes("symport_session")), false, "cookie is invisible to scripts");
         assert.equal((await context.request.get(base + "/api/state")).status(), 200);
         await page.getByRole("button", { name: /Sign out|Выйти/ }).click();

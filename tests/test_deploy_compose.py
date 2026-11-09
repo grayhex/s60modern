@@ -29,7 +29,7 @@ def test_deployment_keeps_the_security_posture_of_the_local_compose():
     assert service["ports"][0].startswith("${SYMPORT_BIND:-127.0.0.1}:"), "nothing is published beyond loopback until the operator names the NAS address"
     lan_keys = {"SYMPORT_ACCESS_MODE", "SYMPORT_BIND", "SYMPORT_LAN_HOST", "SYMPORT_ADMIN_PASSWORD",
                 "SYMPORT_ADMIN_PASSWORD_HASH", "SYMPORT_ADMIN_PASSWORD_FILE", "SYMPORT_SESSION_IDLE_MINUTES",
-                "SYMPORT_SESSION_MAX_MINUTES"}
+                "SYMPORT_SESSION_MAX_MINUTES", "SYMPORT_TLS", "SYMPORT_TLS_CERT_FILE", "SYMPORT_TLS_KEY_FILE"}
     assert set(service["environment"]) == set(base["environment"]) | lan_keys
     assert deploy["networks"]["emulator"]["internal"] is True
     assert deploy["services"]["mgo-symbian"]["profiles"] == ["emulator"]
@@ -65,6 +65,7 @@ def test_home_lan_is_the_default_mode_and_ships_no_credentials():
                      if not line.lstrip().startswith("#"))  # comments may show an example address
     assert "0.0.0.0:" not in text and "192.168." not in text, "no LAN address is hardcoded in the product"
     probe = " ".join(service["healthcheck"]["test"])
-    assert "/healthz" in probe and "/api/state" not in probe, "the probe must work without a login"
-    assert "/healthz" in " ".join(local["services"]["workbench"]["healthcheck"]["test"])
-    assert "/healthz" in (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "symport.healthcheck" in probe, "the probe must work without a login, over HTTP or HTTPS"
+    assert "symport.healthcheck" in " ".join(local["services"]["workbench"]["healthcheck"]["test"])
+    assert "symport.healthcheck" in (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "/healthz" in (ROOT / "symport" / "healthcheck.py").read_text(encoding="utf-8")

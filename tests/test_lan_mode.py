@@ -37,8 +37,11 @@ def load(**overrides):
 def test_lan_config_accepts_exact_nas_address_and_warns_about_plain_http():
     config = load()
     assert config.lan and config.allowed_hosts == {f"{NAS}:8765"}
-    assert config.allowed_origins == {f"http://{NAS}:8765"}
-    assert any("Plain HTTP" in w for w in config.warnings)
+    assert config.tls and config.allowed_origins == {f"https://{NAS}:8765"}, "HTTPS is the Home LAN default"
+    assert not config.warnings
+    plain = load(SYMPORT_TLS="off")
+    assert not plain.tls and plain.allowed_origins == {f"http://{NAS}:8765"}
+    assert any("Plain HTTP" in w for w in plain.warnings)
     assert verify_password(PASSWORD, config.password_hash) and not verify_password("wrong", config.password_hash)
 
 
@@ -62,6 +65,8 @@ def test_lan_ip_change_is_a_config_change_not_a_wildcard():
     {"SYMPORT_LAN_HOST": "bad host"},
     {"SYMPORT_HTTP_PORT": "9000"},                         # port and listener must agree
     {"SYMPORT_ACCESS_MODE": "open"},
+    {"SYMPORT_TLS": "maybe"},
+    {"SYMPORT_TLS_CERT_FILE": "/only/the/cert.pem"},
     {"SYMPORT_PUBLIC_ORIGIN": "http://nas.local"},
     {"SYMPORT_ADMIN_PASSWORD_HASH": hash_password("another-secret-123")},  # both password and hash
     {"SYMPORT_SESSION_IDLE_MINUTES": "0"},
@@ -213,7 +218,8 @@ def test_anonymous_sees_only_login_screen_and_health(lan):
     assert "nonce-" + state.token not in response.getheader("Content-Security-Policy")
     assert call(port, "GET", "/auth/login.js")[0] == 200 and call(port, "GET", "/auth/login.css")[0] == 200
     assert call(port, "GET", "/healthz")[0] == 200
-    assert json.loads(call(port, "GET", "/api/auth/session")[1]) == {"mode": "lan", "authenticated": False}
+    assert json.loads(call(port, "GET", "/api/auth/session")[1]) == {
+        "mode": "lan", "authenticated": False, "tls": False, "ca": False}
     for path in ("/api/state", "/api/device/file?device=a&path=/x", "/api/media/file?device=a&path=/x",
                  "/api/media/export/abc", "/api/audio/a/b", "/api/catalog/archive?id=x", "/api/library/download?id=x",
                  "/api/download?id=x", "/api/device-report", "/api/preview/light", "/next/index.html", "/app.js",
@@ -258,7 +264,7 @@ def test_login_session_csrf_and_logout(lan):
     status, body, _ = call(port, "GET", "/api/state", headers={"Cookie": headers["Cookie"]})
     assert status == 200 and json.loads(body)["schema"] == "symport.web/1"
     assert json.loads(call(port, "GET", "/api/auth/session", headers={"Cookie": headers["Cookie"]})[1]) == {
-        "mode": "lan", "authenticated": True, "csrf": csrf}
+        "mode": "lan", "authenticated": True, "tls": False, "ca": False, "csrf": csrf}
 
     # state-changing requests: CSRF header and Origin are both mandatory
     save = {"rm": "RM-469"}
