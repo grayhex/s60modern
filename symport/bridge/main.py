@@ -29,6 +29,10 @@ from .server import BridgeServer
 from .settings import data_directory, load_config, load_key
 
 
+def is_windows() -> bool:
+    return os.name == "nt"
+
+
 def pem_fingerprint(pem: str) -> str:
     """SHA-256 of the DER form of a single PEM certificate (what SymPort announces); stdlib only."""
     import ssl
@@ -55,6 +59,11 @@ class Agent:
         self._usb_at = 0.0
         self._usb_signature = None
         self.com: dict[str, str] = {}
+        # Nokia-specific Gammu connection (DKU-2 / DKU-2 Phonet): found through the Nokia USB driver, no COM port needed.
+        self.dku2_state = "not-tried"
+        self._dku2_key = None
+        self._dku2_at = 0.0
+        self._dku2_cache: list[dict] = []
         self._signature = None
         self._ports = None
         self._auto_profiles = []
@@ -237,6 +246,7 @@ class Agent:
                 identifier = "auto-card-" + item["root"][0].lower()
                 roots[identifier] = item["root"]
                 self._volume_identities[identifier] = item["identity"]
+        profiles += self._dku2_profiles(candidates)
         self._auto_profiles, self._auto_roots = profiles, roots
         self.status["candidates"] = len(candidates) + len(volumes)
         self.status["diagnostics"] = [r for r in (reason, disk_reason) if r]
@@ -288,7 +298,8 @@ class Agent:
     def doctor_report(self) -> dict:
         relay = self.relay.public_state() if self.relay else None
         origin = self.relay.origin if self.relay else None
-        return doctor.diagnose(self.host or {}, self.com, int(self.status.get("identified", 0)), relay, origin)
+        return doctor.diagnose(self.host or {}, self.com, int(self.status.get("identified", 0)), relay, origin,
+                               dku2=self.dku2_state)
 
     def write_snapshot(self) -> None:
         """The diagnostics window (a separate process) reads this file; it contains only the safe report."""
@@ -302,12 +313,60 @@ class Agent:
         except OSError:
             pass
 
+    DKU2_MODES = ("dku2", "dku2phonet")
+
+    def _dku2_profiles(self, serial_candidates_found) -> list[dict]:
+        """Short, read-only Gammu identify over the Nokia-specific USB connection when Windows shows a working Nokia USB
+        device but no COM port. Tried again only when the USB device set changes or Rescan is pressed. Whether a given
+        phone answers over DKU-2 with the installed Nokia driver is hardware-dependent and unverified: a failure just
+        records `no-response`; nothing is changed in Windows."""
+        if not is_windows() or serial_candidates_found or not gammu_native.available():
+            return []
+        if not self.config.get("auto_usb", True) or self.config.get("gammu_config"):
+            return []
+        usb = [r for r in (self.host or {}).get("usb", []) if r.get("status") == "ok"]
+        key = tuple(sorted((r["vid"], r["pid"], r["class"], r.get("mi") or "") for r in usb))
+        if not key:
+            self.dku2_state, self._dku2_cache = "not-tried", []
+            return []
+        if key == self._dku2_key and (self._dku2_cache or time.monotonic() - self._dku2_at < 3600):
+            return self._dku2_cache
+        self._dku2_key, self._dku2_at, found = key, time.monotonic(), []
+        for mode in self.DKU2_MODES:
+            config = self.root / f"auto-{mode}.cfg"
+            with config.open("w", encoding="utf-8") as file:
+                os.chmod(config, 0o600)
+                file.write(f"[gammu]\nconnection = {mode}\n")
+            try:
+                with self.manager.lock:
+                    observed = gammu_native.invoke(str(config), "identify")
+            except (ValueError, OSError):
+                continue
+            profile = documented_model(str(observed.get("model") or ""))
+            if str(observed.get("manufacturer", "")).casefold() == "nokia" and profile:
+                found.append(
+                    {
+                        "id": "auto-" + mode,
+                        "name": "Nokia " + profile["model"] + " · USB (" + mode + ")",
+                        "kind": "gammu-usb",
+                        "config": str(config),
+                        "manufacturer": "Nokia",
+                        "platform": "S60",
+                        "edition": profile["edition"],
+                    }
+                )
+                break
+        self._dku2_cache = found
+        self.dku2_state = ("identified:" + found[0]["id"].removeprefix("auto-")) if found else "no-response"
+        return found
+
     def monitor(self):
         while not self.stop.is_set():
             try:
                 forced = self._rescan_requested()
                 if forced:
                     self._last_scan, self._ports, self.last_refresh = 0, None, None
+                    self._dku2_key = None  # Rescan: try the Nokia-specific connection again
                 if self.auto:
                     self.scan()
                 else:
@@ -499,7 +558,14 @@ def self_test(report: Path | None):
             _ssl.create_default_context().load_verify_locations(cadata=SELF_TEST_CA)
             sample = doctor.diagnose({"usb": [{"vid": "0421", "pid": "0001", "class": "USB", "status": "problem"}]}, {}, 0)
             assert sample["phone"]["code"] == "usb-driver-problem" and "serial number" not in doctor.export_text(sample).lower()
+            from symport.phone.wpd import WpdAdapter
+
+            fake = WpdAdapter(lambda script, request, timeout=150: [{"index": 0, "storages": ["Memory card"]}])
+            row = fake.device()
+            assert row and row["capability_matrix"]["contacts.read"]["status"] == "unsupported"
+            assert row["capability_matrix"]["files.upload"]["status"] == "unsupported" and row["model"] is None
             result = {
+                "wpd": "passed",
                 "components": {p["name"]: p["present"] for p in parts},
                 "ca_pinning": "passed",
                 "doctor": "passed",

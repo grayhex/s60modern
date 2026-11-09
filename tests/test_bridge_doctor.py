@@ -248,3 +248,71 @@ def test_tray_diagnostics_uses_a_separate_process_and_a_flag_the_exe_understands
     with mock.patch.object(tray, "diagnostics_window", lambda root, port: seen.update(root=root, port=port) or 10):
         assert bridge_main.main(["--diagnostics", "--data-dir", str(tmp_path), "--port", "24999"]) == 10
     assert seen == {"root": tmp_path.absolute(), "port": 24999}
+
+
+PORTABLE = {"index": 0, "storages": ["Phone memory", "Memory card"]}
+
+
+def test_a_readable_mtp_phone_is_not_a_dead_end():
+    """E72 on Windows 11: WPD only, but Windows lists its storages → files are available; PIM is not."""
+    snapshot = host(usb=[WPD], portable=[PORTABLE])
+    report = doctor.diagnose(snapshot, {}, 0, parts=[])
+    assert report["phone"]["code"] == "mtp-files" and report["phone"]["status"] == doctor.INFO
+    states = {r["id"]: r["status"] for r in report["routes"]}
+    assert states == {"mtp-files": "ok", "mass-storage": "info", "pc-suite": "info"}
+    action = report["phone"]["action"][0]
+    assert "contacts" in action and "COM port" in action and "Mass storage" in action
+    # WPD without readable storage stays the cautionary status, never "files available"
+    assert doctor.diagnose(host(usb=[WPD], portable=[{"index": 0, "storages": []}]), {}, 0, parts=[])["phone"]["code"] == "mtp-only"
+    assert doctor.diagnose(host(usb=[WPD]), {}, 0, parts=[])["phone"]["code"] == "mtp-only"
+
+
+def test_three_routes_are_independent():
+    both = doctor.diagnose(host(usb=[WPD], portable=[PORTABLE], volumes=[DRIVE]), {}, 0, parts=[])
+    assert {r["id"]: r["status"] for r in both["routes"]}["mass-storage"] == "ok"
+    ready = doctor.diagnose(host(usb=[USB_OK], serial=[COM]), {"COM7": "free"}, 1, parts=[])
+    assert {r["id"]: r["status"] for r in ready["routes"]}["pc-suite"] == "ok"
+    silent = doctor.diagnose(host(usb=[WPD], portable=[PORTABLE]), {}, 0, parts=[], dku2="no-response")
+    pc = next(r for r in silent["routes"] if r["id"] == "pc-suite")
+    assert pc["status"] == "warn" and "DKU-2" in pc["summary"][0] and "not guaranteed" in pc["action"][0]
+    assert silent["dku2"] == "no-response"
+    identified = doctor.diagnose(host(usb=[WPD], portable=[PORTABLE]), {}, 0, parts=[], dku2="identified:dku2")
+    assert identified["dku2"] == "identified"
+    assert "mtp-files" in doctor.export_text(silent)
+
+
+def test_dku2_probe_is_read_only_rate_limited_and_honest(agent, monkeypatch):
+    monkeypatch.setattr(bridge_main, "is_windows", lambda: True)
+    monkeypatch.setattr(bridge_main.gammu_native, "available", lambda: True)
+    agent.host = host(usb=[WPD])
+    agent.config["auto_usb"] = True
+    calls = []
+
+    def silent(config, action, **kw):
+        calls.append((Path(config).read_text(), action))
+        raise ValueError("no answer")
+
+    monkeypatch.setattr(bridge_main.gammu_native, "invoke", silent)
+    assert agent._dku2_profiles([]) == [] and agent.dku2_state == "no-response"
+    assert [a for _, a in calls] == ["identify", "identify"], "identify only — nothing is written to the phone"
+    assert [c.split("connection = ")[1].strip() for c, _ in calls] == ["dku2", "dku2phonet"]
+    assert agent._dku2_profiles([]) == [] and len(calls) == 2, "not retried while the USB device set is unchanged"
+    agent._dku2_key = None                                   # Rescan
+    agent._dku2_profiles([])
+    assert len(calls) == 4
+
+    def answers(config, action, **kw):
+        return {"manufacturer": "Nokia", "model": "E72"}
+
+    monkeypatch.setattr(bridge_main.gammu_native, "invoke", answers)
+    agent._dku2_key = None
+    found = agent._dku2_profiles([])
+    assert found and found[0]["kind"] == "gammu-usb" and agent.dku2_state.startswith("identified")
+    # a COM port, no working USB device or a hand-written Gammu config bypass the probe
+    assert agent._dku2_profiles([{"port": "COM3"}]) == []
+    agent.host = host()
+    assert agent._dku2_profiles([]) == []
+    agent.config["gammu_config"] = "C:/x.cfg"
+    agent.host = host(usb=[WPD])
+    agent._dku2_key = None
+    assert agent._dku2_profiles([]) == []

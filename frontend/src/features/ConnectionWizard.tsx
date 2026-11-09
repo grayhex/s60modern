@@ -20,6 +20,7 @@ import {
   computeLevels,
   computeSteps,
   hostSchema,
+  filesOnly,
   transportMode,
   type HostInfo,
   type Step,
@@ -140,9 +141,7 @@ export default function ConnectionWizard() {
   });
 
   const phones = devices.data?.devices ?? [];
-  const identifiedNow = phones.some(
-    (d) => d.transport !== 'mounted-volume' && d.connected && d.model,
-  );
+  const identifiedNow = phones.some((d) => !filesOnly(d) && d.connected && d.model);
   // Remember that a phone answered once; losing it afterwards is reported as a lost device.
   if (identifiedNow && !identified) setIdentified(true);
   const grace = pair?.kind === 'ok' && now - pairedAt < 25000;
@@ -200,7 +199,7 @@ export default function ConnectionWizard() {
   const busy = request.isPending || checkBridge.isPending || rerun.isPending;
 
   // Pick the only identified phone automatically; several connections need an explicit choice.
-  const only = connected.filter((d) => d.transport !== 'mounted-volume');
+  const only = connected.filter((d) => !filesOnly(d));
   const autoSelected = useRef('');
   useEffect(() => {
     const [one] = only;
@@ -290,7 +289,7 @@ export default function ConnectionWizard() {
                 onChange={() => setDevice(d.id)}
               />{' '}
               {d.name ?? d.model ?? d.id} · {t(...MODE_TEXT[transportMode(d)])}
-              {d.transport === 'mounted-volume' &&
+              {filesOnly(d) &&
                 ` — ${t('files only, not a phone identity', 'только файлы, не идентичность телефона')}`}
             </label>
           ))}
