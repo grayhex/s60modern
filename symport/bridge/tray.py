@@ -37,106 +37,144 @@ def autostart(enabled=None):
     return bool(enabled)
 
 
-def run_tray(agent, key):
+SETTINGS_SAVED = 0
+SETTINGS_CLOSED = 10
+
+
+def settings_command(root: Path, port: int) -> list[str]:
+    """The settings window runs in its own process: Tk owns that process' main thread, so the window can
+    always be closed and never shares an event loop with the tray icon."""
+    if getattr(sys, "frozen", False):
+        base = [sys.executable]
+    else:
+        base = [sys.executable, "-m", "symport.bridge.main"]
+    return [*base, "--settings", "--data-dir", str(root), "--port", str(port)]
+
+
+def settings_window(root_dir: Path, port: int) -> int:
+    """Blocking Tk settings dialog (call from a process main thread). Returns SETTINGS_SAVED or SETTINGS_CLOSED."""
     from tkinter import BooleanVar, StringVar, Tk, filedialog, messagebox, ttk
+
+    from .settings import load_key
+
+    result = SETTINGS_CLOSED
+    root = Tk()
+    root.title("SymPort Bridge · " + VERSION)
+    root.resizable(False, False)
+    config = load_config(root_dir)
+    frame = ttk.Frame(root, padding=18)
+    frame.grid()
+    ttk.Label(frame, text="Nokia Symbian S60 · Local Bridge").grid(
+        row=0, column=0, columnspan=3, sticky="w", pady=(0, 12)
+    )
+    auto = BooleanVar(value=config.get("auto_usb", True))
+    startup = BooleanVar(value=autostart())
+    ttk.Checkbutton(frame, text="Discover Nokia USB devices automatically", variable=auto).grid(
+        row=1, column=0, columnspan=3, sticky="w"
+    )
+    ttk.Checkbutton(frame, text="Start at Windows sign-in", variable=startup).grid(
+        row=2, column=0, columnspan=3, sticky="w"
+    )
+    checks = BooleanVar(value=config.get("update_check", True))
+    ttk.Checkbutton(
+        frame, text="Check for updates daily (always asks before installing)", variable=checks
+    ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(8, 0))
+    gammu = StringVar(value=config.get("gammu_config", ""))
+    profiles = StringVar(value=config.get("connections_file", ""))
+    for row, label, value in [
+        (3, "Gammu config (optional)", gammu),
+        (4, "Connection profiles (optional)", profiles),
+    ]:
+        ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=7)
+        ttk.Entry(frame, textvariable=value, width=43).grid(row=row, column=1)
+        ttk.Button(
+            frame,
+            text="Browse",
+            command=lambda v=value: v.set(filedialog.askopenfilename(parent=root) or v.get()),
+        ).grid(row=row, column=2, padx=(8, 0))
+    ttk.Label(
+        frame, text="API: http://127.0.0.1:" + str(port) + " · pair in SymPort → Connection"
+    ).grid(row=5, column=0, columnspan=3, sticky="w", pady=10)
+
+    def copy():
+        root.clipboard_clear()
+        root.clipboard_append(load_key(root_dir))
+        root.update()
+        messagebox.showinfo(
+            "Bridge key",
+            "Key copied. Keep it private; configure the same key in your SymPort backend.",
+            parent=root,
+        )
+
+    ttk.Button(frame, text="Copy Bridge key", command=copy).grid(row=6, column=0, sticky="w")
+
+    def close():
+        root.destroy()
+
+    def save():
+        nonlocal result
+        try:
+            for value in (gammu.get(), profiles.get()):
+                if value and (not Path(value).is_absolute() or not Path(value).is_file()):
+                    raise ValueError("Choose existing absolute configuration paths")
+            config.update(
+                auto_usb=auto.get(),
+                update_check=checks.get(),
+                gammu_config=gammu.get(),
+                connections_file=profiles.get(),
+            )
+            save_config(root_dir, config)
+            autostart(startup.get())
+            result = SETTINGS_SAVED
+            root.destroy()
+        except (ValueError, OSError):
+            messagebox.showerror(
+                "Settings",
+                "Settings could not be applied. Check the selected files and connection profile schema.",
+                parent=root,
+            )
+
+    buttons = ttk.Frame(frame)
+    buttons.grid(row=6, column=1, columnspan=2, sticky="e")
+    ok = ttk.Button(buttons, text="OK", command=save, default="active")
+    ok.grid(row=0, column=0, padx=(0, 8))
+    ttk.Button(buttons, text="Cancel", command=close).grid(row=0, column=1)
+    ttk.Label(frame, text="No firmware flashing. Pair Bluetooth devices in Windows first.").grid(
+        row=7, column=0, columnspan=3, sticky="w", pady=(12, 0)
+    )
+    root.protocol("WM_DELETE_WINDOW", close)
+    root.bind("<Return>", lambda _event: save())
+    root.bind("<Escape>", lambda _event: close())
+    root.attributes("-topmost", True)  # appear above the other windows, then behave normally
+    root.after(400, lambda: root.attributes("-topmost", False))
+    root.lift()
+    ok.focus_set()
+    root.mainloop()
+    return result
+
+
+def run_tray(agent, key):
+    import subprocess
 
     import pystray
     from PIL import Image
 
-    settings_open = threading.Lock()
+    settings_process: list[subprocess.Popen] = []
 
     def settings():
-        if not settings_open.acquire(blocking=False):
-            return
+        if settings_process and settings_process[0].poll() is None:
+            return  # already open
+        process = subprocess.Popen(settings_command(agent.root, agent.server.server_port))
+        settings_process[:] = [process]
 
-        def window():
-            root = Tk()
-            root.title("SymPort Bridge · " + VERSION)
-            root.resizable(False, False)
-            config = load_config(agent.root)
-            frame = ttk.Frame(root, padding=18)
-            frame.grid()
-            ttk.Label(frame, text="Nokia Symbian S60 · Local Bridge").grid(
-                row=0, column=0, columnspan=3, sticky="w", pady=(0, 12)
-            )
-            auto = BooleanVar(value=config.get("auto_usb", True))
-            startup = BooleanVar(value=autostart())
-            ttk.Checkbutton(
-                frame, text="Discover Nokia USB devices automatically", variable=auto
-            ).grid(row=1, column=0, columnspan=3, sticky="w")
-            ttk.Checkbutton(frame, text="Start at Windows sign-in", variable=startup).grid(
-                row=2, column=0, columnspan=3, sticky="w"
-            )
-            checks = BooleanVar(value=config.get("update_check", True))
-            ttk.Checkbutton(
-                frame,
-                text="Check for updates daily (always asks before installing)",
-                variable=checks,
-            ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(8, 0))
-            gammu = StringVar(value=config.get("gammu_config", ""))
-            profiles = StringVar(value=config.get("connections_file", ""))
-            for row, label, value in [
-                (3, "Gammu config (optional)", gammu),
-                (4, "Connection profiles (optional)", profiles),
-            ]:
-                ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=7)
-                ttk.Entry(frame, textvariable=value, width=43).grid(row=row, column=1)
-                ttk.Button(
-                    frame,
-                    text="Browse",
-                    command=lambda v=value: v.set(filedialog.askopenfilename() or v.get()),
-                ).grid(row=row, column=2, padx=(8, 0))
-            ttk.Label(
-                frame,
-                text="API: http://127.0.0.1:"
-                + str(agent.server.server_port)
-                + " · pair in SymPort → Connection",
-            ).grid(row=5, column=0, columnspan=3, sticky="w", pady=10)
-
-            def copy():
-                root.clipboard_clear()
-                root.clipboard_append(key)
-                root.update()
-                messagebox.showinfo(
-                    "Bridge key",
-                    "Key copied. Keep it private; configure the same key in your SymPort backend.",
-                )
-
-            ttk.Button(frame, text="Copy Bridge key", command=copy).grid(
-                row=6, column=0, sticky="w"
-            )
-
-            def save():
+        def apply():
+            if process.wait() == SETTINGS_SAVED:
                 try:
-                    for value in (gammu.get(), profiles.get()):
-                        if value and (not Path(value).is_absolute() or not Path(value).is_file()):
-                            raise ValueError("Choose existing absolute configuration paths")
-                    config.update(
-                        auto_usb=auto.get(),
-                        update_check=checks.get(),
-                        gammu_config=gammu.get(),
-                        connections_file=profiles.get(),
-                    )
-                    save_config(agent.root, config)
-                    autostart(startup.get())
                     agent.refresh_config()
-                    root.destroy()
                 except (ValueError, OSError):
-                    messagebox.showerror(
-                        "Settings",
-                        "Settings could not be applied. Check the selected files and connection profile schema.",
-                    )
+                    pass
 
-            ttk.Button(frame, text="Save", command=save).grid(row=6, column=2, sticky="e")
-            ttk.Label(
-                frame, text="No firmware flashing. Pair Bluetooth devices in Windows first."
-            ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(12, 0))
-            try:
-                root.mainloop()
-            finally:
-                settings_open.release()
-
-        threading.Thread(target=window, daemon=True, name="bridge-settings").start()
+        threading.Thread(target=apply, daemon=True, name="bridge-settings").start()
 
     def diagnostics():
         import ctypes
@@ -166,6 +204,9 @@ def run_tray(agent, key):
             diagnostics()
 
     def quit_app(icon, item):
+        for process in settings_process:
+            if process.poll() is None:
+                process.terminate()
         icon.stop()
 
     def message(text, flags=0x40040):  # MB_ICONINFORMATION | MB_TOPMOST

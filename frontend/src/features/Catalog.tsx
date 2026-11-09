@@ -416,22 +416,6 @@ export default function Catalog() {
           </article>
         ))}
       </Card>
-      <Card>
-        <h2>{t('Research', 'Исследование')}</h2>
-        {state.data?.research.map((r, i) => (
-          <p key={i}>
-            {text(r.name)}: {text(r.reason)}{' '}
-            <a
-              className="text-link"
-              href={text(r.source).startsWith('https://') ? text(r.source) : undefined}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {t('Source', 'Источник')} ↗
-            </a>
-          </p>
-        ))}
-      </Card>
       {confirm.dialog(async (value) => {
         await operation.mutateAsync({
           ...value,

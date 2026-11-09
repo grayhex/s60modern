@@ -38,7 +38,7 @@ or COM port missing”. Gammu failures are reduced to fixed reasons (`port-busy`
 Use a current Chromium browser for local-network permission prompts. If browser
 policy blocks loopback access, use the existing authenticated SSH PC Bridge route
 in [DEVICE_MANAGER.md](DEVICE_MANAGER.md). The Workbench must be reachable by the
-Windows PC. HTTP is allowed only for localhost; remote Workbench requires HTTPS.
+Windows PC. HTTP is allowed only for localhost; remote Workbench requires HTTPS. SymPort in Home LAN mode serves HTTPS itself: install its local CA certificate (login page link) on this PC once, so both the browser and the Bridge trust `https://<nas-ip>:8765` (docs/DEPLOY_PORTAINER.md).
 Keep the remote deployment behind authentication; the default Docker port stays
 bound to host loopback. Set `SYMPORT_PUBLIC_ORIGIN=https://your-symport.example`
 only when using a trusted authenticated HTTPS reverse proxy.

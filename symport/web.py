@@ -189,6 +189,7 @@ class Workbench:
         self.access = access or AccessConfig()
         self.sessions = SessionStore(self.access.idle_seconds, self.access.absolute_seconds)
         self.limiter = LoginLimiter()
+        self.tls_ca: Path | None = None  # public certificate of SymPort's local CA, when it serves HTTPS itself
         self.devices = DeviceManager(repo)
         self.local_transport = self.devices.transport
         self.bridge_relay = None
@@ -453,7 +454,7 @@ def make_handler(state: Workbench):
 
         def _https(self) -> bool:
             public = state.access.public_origin
-            return bool(public) and self.headers.get("Host") == urlsplit(public).netloc
+            return state.access.tls or (bool(public) and self.headers.get("Host") == urlsplit(public).netloc)
 
         def _cookie_attrs(self) -> str:
             return "; HttpOnly; SameSite=Strict" + ("; Secure" if self._https() else "")
@@ -507,7 +508,8 @@ def make_handler(state: Workbench):
                 return True
             if path == "/api/auth/session":
                 session = self._session()
-                self._json({"mode": "lan", "authenticated": bool(session), **({"csrf": session.csrf} if session else {})})
+                self._json({"mode": "lan", "authenticated": bool(session), "tls": state.access.tls,
+                            "ca": state.tls_ca is not None, **({"csrf": session.csrf} if session else {})})
                 return True
             if path in ("/auth/login.js", "/auth/login.css"):
                 self._asset(path.lstrip("/"), "text/javascript; charset=utf-8" if path.endswith(".js") else "text/css; charset=utf-8")
@@ -528,6 +530,12 @@ def make_handler(state: Workbench):
                 return self._json({"error": "Host not allowed"}, 403)
             if url.path == "/healthz":
                 return self._json({"status": "ok"})
+            if url.path == "/symport-ca.crt" and state.tls_ca is not None:
+                try:  # public certificate only: anonymous on purpose, so a new computer can trust this server
+                    return self._send(state.tls_ca.read_bytes(), "application/x-x509-ca-cert",
+                                      filename="SymPort-Local-CA.crt")
+                except OSError:
+                    return self._json({"error": "Not found"}, 404)
             if state.access.lan and self._lan_get_gate(url.path):
                 return
             react_root = REACT_ASSETS
@@ -1015,10 +1023,29 @@ def main(argv: list[str] | None = None) -> None:
         print("SymPort did not start. Fix the setting above (nothing is served until it is safe).", file=sys.stderr)
         raise SystemExit(78) from None
     repo = find_repo_root(explicit=args.repo) if args.repo else find_repo_root()
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(Workbench(repo, access)))
+    state = Workbench(repo, access)
+    if access.tls:
+        from symport import tls
+
+        try:
+            if access.tls_cert:
+                material = tls.TlsMaterial(Path(access.tls_cert), Path(access.tls_key), None)
+            else:
+                directory = Path(access.tls_dir) if access.tls_dir else repo / "build" / "symport" / "tls"
+                material = tls.ensure_certificates(directory, list(access.hosts))
+            context = tls.server_context(material)
+        except (OSError, ValueError) as exc:
+            print(f"SymPort: configuration error: cannot prepare HTTPS: {exc}", file=sys.stderr)
+            raise SystemExit(78) from None
+        state.tls_ca = material.ca_file
+        server = tls.TlsThreadingHTTPServer((args.host, args.port), make_handler(state))
+        server.tls_context = context
+    else:
+        server = ThreadingHTTPServer((args.host, args.port), make_handler(state))
     if access.lan:
         shown = sorted(access.allowed_origins)
-        print("SymPort Workbench — Home LAN mode (login required): " + ", ".join(shown))
+        print("SymPort Workbench — Home LAN mode (login required"
+              + (", HTTPS" if access.tls else "") + "): " + ", ".join(shown))
         for warning in access.warnings:
             print("WARNING: " + warning, file=sys.stderr)
         print("Do not forward this port on your router and do not expose it to the Internet.")

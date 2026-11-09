@@ -4,6 +4,7 @@
     ru: {
       lead: 'Войдите, чтобы открыть рабочее место SymPort.', password: 'Пароль администратора', submit: 'Войти',
       hint: 'Пароль задан в настройках запуска (SYMPORT_ADMIN_PASSWORD) на вашем NAS или компьютере.',
+      ca: 'Скачать сертификат SymPort', caNote: ' — установите его на компьютере (двойной щелчок → «Установить сертификат» → «Доверенные корневые центры»), и браузер, и Windows Bridge будут доверять этому адресу.',
       wrong: 'Неверный пароль.', empty: 'Введите пароль.', locked: 'Слишком много попыток. Повторите через {n} с.',
       forbidden: 'Доступ запрещён: этот адрес не разрешён настройкой SymPort. Откройте SymPort по адресу, указанному в SYMPORT_BIND / SYMPORT_LAN_HOST.',
       offline: 'Нет связи с сервером SymPort. Проверьте, что NAS включён и вы в той же сети.',
@@ -12,6 +13,7 @@
     en: {
       lead: 'Sign in to open the SymPort workspace.', password: 'Administrator password', submit: 'Sign in',
       hint: 'The password is set in the launch settings (SYMPORT_ADMIN_PASSWORD) on your NAS or computer.',
+      ca: 'Download the SymPort certificate', caNote: ' — install it on your computer (double-click → Install Certificate → Trusted Root Certification Authorities) so the browser and the Windows Bridge trust this address.',
       wrong: 'Wrong password.', empty: 'Enter the password.', locked: 'Too many attempts. Try again in {n} s.',
       forbidden: 'Access denied: this address is not allowed by the SymPort configuration. Open SymPort at the address set in SYMPORT_BIND / SYMPORT_LAN_HOST.',
       offline: 'Cannot reach the SymPort server. Check that the NAS is on and you are on the same network.',
@@ -59,4 +61,8 @@
     }).catch(function () { show('offline'); }).then(function () { submit.disabled = false; });
   });
   apply();
+  fetch('/api/auth/session', { credentials: 'same-origin', cache: 'no-store' })
+    .then(function (r) { return r.json(); })
+    .then(function (b) { if (b && b.ca) document.getElementById('ca').hidden = false; })
+    .catch(function () { /* the login form still works */ });
 })();

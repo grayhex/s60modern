@@ -172,8 +172,12 @@ export function computeSteps(input: WizardInput): Step[] {
         'origin-not-secure',
         [
           [
-            'Open SymPort over HTTPS (trusted reverse proxy with SYMPORT_PUBLIC_ORIGIN) or from localhost / an SSH tunnel. Bridge accepts plain HTTP only for localhost.',
-            'Откройте SymPort по HTTPS (доверенный обратный прокси с SYMPORT_PUBLIC_ORIGIN) либо с localhost / через SSH-туннель. Bridge принимает HTTP только для localhost.',
+            'Open SymPort over HTTPS: Home LAN mode serves it by default (https://<nas-ip>:8765, SYMPORT_TLS not set to off), or use a trusted reverse proxy with SYMPORT_PUBLIC_ORIGIN, or open it from localhost / an SSH tunnel. Bridge accepts plain HTTP only for localhost.',
+            'Откройте SymPort по HTTPS: режим Home LAN отдаёт его так по умолчанию (https://<IP-NAS>:8765, SYMPORT_TLS не равен off), либо через доверенный обратный прокси с SYMPORT_PUBLIC_ORIGIN, либо с localhost / через SSH-туннель. Bridge принимает HTTP только для localhost.',
+          ],
+          [
+            'On a new computer install the SymPort certificate once (link on the login page): double-click it → Install Certificate → Current User → Trusted Root Certification Authorities. The browser and the Windows Bridge then trust the address.',
+            'На новом компьютере один раз установите сертификат SymPort (ссылка на экране входа): двойной щелчок → «Установить сертификат» → «Текущий пользователь» → «Доверенные корневые центры сертификации». После этого браузер и Windows Bridge доверяют адресу.',
           ],
         ],
       ),
