@@ -124,6 +124,7 @@ It reads the safe report the running Bridge keeps current and shows **separate**
 |---|---|---|
 | `no-usb` | Windows sees no Nokia on USB | data cable (not charge-only), unlock the phone, choose PC Suite, another port, close Nokia Suite |
 | `usb-driver-problem` | Nokia on USB, Device Manager reports a problem | open Device Manager (button); the Nokia PC Suite / Connectivity driver is needed — install it yourself from Nokia/Microsoft |
+| `mtp-only` | Windows shows the phone only as a media device (class WPD/MTP): no COM port, no drive letter — what a Nokia E72 reported on Windows 11 | for files choose Mass storage on the phone (SymPort does not read MTP yet); for contacts/calendar/SMS the Nokia PC Suite / Connectivity Cable driver must provide a COM port — install it yourself, choose PC Suite, replug |
 | `no-com` | driver fine, but no COM port | switch the phone to PC Suite (not Mass storage / Media transfer), replug |
 | `com-busy` | the Nokia COM port is held by another program | close Nokia Suite / Ovi Suite / terminals |
 | `gammu-not-identified` | free COM port, no answer from the phone | unlock, keep PC Suite, rescan; a model-specific profile may be needed |
@@ -139,7 +140,7 @@ Buttons: **Rescan** (asks the running Bridge to look again at once), **Copy diag
 connects to a server on its own) and **Close**. New Nokia USB devices are noticed within about 10 seconds without pressing
 Rescan. A Windows PnP record alone is never shown as “Connected”.
 
-The copied text contains versions, VID:PID, statuses and counts only — no IMEI, USB serial numbers or PnP instance IDs,
+The USB list shows each Nokia node's class (e.g. `WPD`, `Ports`, `Modem`), the composite-interface number and Device Manager's error code (28 = no driver installed). The copied text contains versions, VID:PID, statuses and counts only — no IMEI, USB serial numbers or PnP instance IDs,
 paths, addresses (the SymPort URL is reduced to its scheme), keys, tokens, contacts or SMS.
 
 **Drivers.** SymPort never installs, downloads or replaces drivers, never asks you to disable driver signature enforcement

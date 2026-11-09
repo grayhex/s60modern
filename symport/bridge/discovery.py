@@ -164,7 +164,7 @@ def usb_devices(sysfs: str = "/sys/bus/usb/devices"):
         script = (
             "$ErrorActionPreference='Stop'; $rows=@(Get-PnpDevice -PresentOnly | "
             "Where-Object { $_.InstanceId -match '^USB\\\\VID_0421' } | "
-            "Select-Object Class,Status,InstanceId); ConvertTo-Json -InputObject @($rows) -Compress"
+            "Select-Object Class,Status,InstanceId,ConfigManagerErrorCode); ConvertTo-Json -InputObject @($rows) -Compress"
         )
         try:
             result = subprocess.run(
@@ -185,12 +185,18 @@ def usb_devices(sysfs: str = "/sys/bus/usb/devices"):
             match = re.search(r"VID_([0-9A-Fa-f]{4})&PID_([0-9A-Fa-f]{4})", str(item.get("InstanceId")))
             if not match or match[1].upper() != NOKIA_VID.upper():
                 continue
+            # `mi` is the composite-interface number only (never the serial part of the instance id); `problem_code`
+            # is Device Manager's error code (28 = no driver installed, 10 = cannot start, ...).
+            interface = re.search(r"&MI_([0-9A-Fa-f]{2})", str(item.get("InstanceId")))
+            code = item.get("ConfigManagerErrorCode")
             rows.append(
                 {
                     "vid": match[1].lower(),
                     "pid": match[2].lower(),
                     "class": re.sub(r"[^A-Za-z0-9 ._-]", "", str(item.get("Class") or "unknown"))[:40],
                     "status": "ok" if str(item.get("Status")) == "OK" else "problem",
+                    "mi": interface[1].lower() if interface else None,
+                    "problem_code": code if isinstance(code, int) and code else None,
                     "source": "Windows PnP record",
                 }
             )
@@ -226,7 +232,7 @@ def usb_devices(sysfs: str = "/sys/bus/usb/devices"):
                     "source": "Linux sysfs",
                 }
             )
-    unique = {(r["vid"], r["pid"], r["class"], r["status"]): r for r in rows}
+    unique = {(r["vid"], r["pid"], r["class"], r["status"], r.get("mi")): r for r in rows}
     return list(unique.values()), None
 
 

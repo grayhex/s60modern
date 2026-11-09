@@ -1,3 +1,3 @@
 """SymPort Bridge: shared local transport service, packaged for Windows."""
 
-VERSION = "0.3.6"
+VERSION = "0.3.7"

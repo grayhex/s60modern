@@ -474,6 +474,29 @@ export function computeSteps(input: WizardInput): Step[] {
           ],
         ),
       );
+    else if (usb.length && usb.every((u) => u.class === 'WPD'))
+      steps.push(
+        make(
+          'usb',
+          usbTitle,
+          'failed',
+          [
+            'Windows sees the phone only as a media device (MTP): no COM port and no drive letter.',
+            'Windows видит телефон только как медиа-устройство (MTP): COM-порта и буквы диска нет.',
+          ],
+          'mtp-only',
+          [
+            [
+              'For files choose Mass Storage on the phone: the memory card then gets a drive letter (SymPort does not read MTP yet).',
+              'Для файлов выберите на телефоне Mass Storage: карта памяти получит букву диска (SymPort пока не читает MTP).',
+            ],
+            [
+              'For contacts, calendar and SMS the Nokia PC Suite / Connectivity Cable driver must provide a COM port: install it yourself from Nokia/Microsoft, choose PC Suite and replug. If the phone says PC Suite but Windows shows only a portable device, that driver is most likely missing.',
+              'Для контактов, календаря и SMS COM-порт должен дать драйвер Nokia PC Suite / Connectivity Cable: установите его сами у Nokia/Microsoft, выберите PC Suite и переподключите кабель. Если на телефоне выбран PC Suite, а Windows показывает только переносное устройство, скорее всего этого драйвера нет.',
+            ],
+          ],
+        ),
+      );
     else if (usb.length)
       steps.push(
         make(
