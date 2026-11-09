@@ -28,6 +28,8 @@ from .discovery import (
 from .server import BridgeServer
 from .settings import data_directory, load_config, load_key
 
+SCAN_BASE, SCAN_MAX = 30, 600  # seconds between AT identify cycles: 30 → doubled while silent → 10 minutes
+
 
 def is_windows() -> bool:
     return os.name == "nt"
@@ -59,6 +61,11 @@ class Agent:
         self._usb_at = 0.0
         self._usb_signature = None
         self.com: dict[str, str] = {}
+        self._com_at = 0.0
+        # AT identify polling backs off while nothing answers (a phone that never answers must not be hammered through
+        # its modem channel); it starts over on a port-set/USB change or Rescan.
+        self._scan_delay = SCAN_BASE
+        self.at_failed: set[str] = set()  # ports that opened but whose identify got no answer
         # Nokia-specific Gammu connection (DKU-2 / DKU-2 Phonet): found through the Nokia USB driver, no COM port needed.
         self.dku2_state = "not-tried"
         self._dku2_key = None
@@ -202,16 +209,27 @@ class Agent:
                 self._signature = signature
                 self.last_refresh = None
 
+    def _reset_scan(self):
+        """USB hotplug or Rescan: look again at once and start the back-off over."""
+        self._last_scan, self._ports, self._scan_delay = 0, None, SCAN_BASE
+
     def scan(self):
         candidates, reason = serial_candidates()
         ports = tuple(c["port"] for c in candidates)
-        if ports == self._ports and time.monotonic() - self._last_scan < 30:
+        if ports != self._ports:
+            self._scan_delay = SCAN_BASE
+        if ports == self._ports and time.monotonic() - self._last_scan < self._scan_delay:
             return
+        if self.stop.is_set() or self.manager.lock.locked():
+            return  # closing, or another phone operation is running: do not start an identify on top of it
         self._ports = ports
         self._last_scan = time.monotonic()
         profiles = []
         if self.config.get("auto_usb", True) and not self.config.get("gammu_config"):
-            for candidate in candidates:
+            # Modem port first; the Java comm port is not an AT port and is never opened.
+            for candidate in [c for c in candidates if c["kind"] != "javacomm"]:
+                if self.com.get(candidate["port"]) == "busy" or self.stop.is_set():
+                    continue  # another program holds it: identify would only time out
                 name = "auto-usb-" + hashlib.sha256(candidate["port"].encode()).hexdigest()[:8]
                 config = self.root / (name + ".cfg")
                 with config.open("w", encoding="utf-8") as file:
@@ -223,6 +241,7 @@ class Agent:
                     profile = documented_model(str(observed.get("model") or ""))
                     if str(observed.get("manufacturer", "")).casefold() != "nokia" or not profile:
                         continue
+                    self.at_failed.discard(candidate["port"])
                     profiles.append(
                         {
                             "id": name,
@@ -235,6 +254,7 @@ class Agent:
                         }
                     )
                 except (ValueError, OSError):
+                    self.at_failed.add(candidate["port"])  # the port opened but nobody answered
                     continue
         volumes, disk_reason = (
             windows_nokia_volumes() if self.config.get("auto_usb", True) else ([], None)
@@ -246,7 +266,8 @@ class Agent:
                 identifier = "auto-card-" + item["root"][0].lower()
                 roots[identifier] = item["root"]
                 self._volume_identities[identifier] = item["identity"]
-        profiles += self._dku2_profiles(candidates)
+        profiles += self._dku2_profiles(profiles)
+        self._scan_delay = SCAN_BASE if profiles else min(self._scan_delay * 2, SCAN_MAX)
         self._auto_profiles, self._auto_roots = profiles, roots
         self.status["candidates"] = len(candidates) + len(volumes)
         self.status["diagnostics"] = [r for r in (reason, disk_reason) if r]
@@ -286,9 +307,13 @@ class Agent:
             self.host["usb"] = usb
         self.status["usb_seen"] = len(self.host["usb"])
         # Probe COM ports only while nothing is identified and no phone operation holds the manager.
-        if self.status.get("identified", 0) == 0 and self.manager.lock.acquire(blocking=False):
+        ports = [p["port"] for p in self.host["serial"] if p.get("kind") != "javacomm"]
+        if self.status.get("identified", 0) == 0 and (
+            force or changed or set(self.com) != set(ports) or now - self._com_at >= self._scan_delay
+        ) and self.manager.lock.acquire(blocking=False):
             try:
-                self.com = {p["port"]: doctor.com_state(p["port"]) for p in self.host["serial"]}
+                self.com = {p: doctor.com_state(p, silent=p in self.at_failed) for p in ports}
+                self._com_at = now
             finally:
                 self.manager.lock.release()
         elif self.status.get("identified", 0) > 0:
@@ -298,7 +323,9 @@ class Agent:
     def doctor_report(self) -> dict:
         relay = self.relay.public_state() if self.relay else None
         origin = self.relay.origin if self.relay else None
-        return doctor.diagnose(self.host or {}, self.com, int(self.status.get("identified", 0)), relay, origin,
+        # A port that opens fine but whose AT identify got no answer is "silent", not just "free".
+        com = {p: ("silent" if state == "free" and p in self.at_failed else state) for p, state in self.com.items()}
+        return doctor.diagnose(self.host or {}, com, int(self.status.get("identified", 0)), relay, origin,
                                dku2=self.dku2_state)
 
     def write_snapshot(self) -> None:
@@ -315,12 +342,13 @@ class Agent:
 
     DKU2_MODES = ("dku2", "dku2phonet")
 
-    def _dku2_profiles(self, serial_candidates_found) -> list[dict]:
+    def _dku2_profiles(self, at_profiles) -> list[dict]:
         """Short, read-only Gammu identify over the Nokia-specific USB connection when Windows shows a working Nokia USB
-        device but no COM port. Tried again only when the USB device set changes or Rescan is pressed. Whether a given
-        phone answers over DKU-2 with the installed Nokia driver is hardware-dependent and unverified: a failure just
-        records `no-response`; nothing is changed in Windows."""
-        if not is_windows() or serial_candidates_found or not gammu_native.available():
+        device and the AT route gave no answer: no COM port at all, or COM ports that stay silent. Tried again only when
+        the USB device set changes or Rescan is pressed. Whether a given phone answers over DKU-2 with the installed
+        Nokia driver is hardware-dependent and unverified: a failure just records `no-response`; nothing is changed in
+        Windows."""
+        if not is_windows() or at_profiles or self.stop.is_set() or not gammu_native.available():
             return []
         if not self.config.get("auto_usb", True) or self.config.get("gammu_config"):
             return []
@@ -365,7 +393,9 @@ class Agent:
             try:
                 forced = self._rescan_requested()
                 if forced:
-                    self._last_scan, self._ports, self.last_refresh = 0, None, None
+                    self._reset_scan()
+                    self.last_refresh = None
+                    self._com_at = 0.0
                     self._dku2_key = None  # Rescan: try the Nokia-specific connection again
                 if self.auto:
                     self.scan()
@@ -385,7 +415,8 @@ class Agent:
                     self.last_refresh = time.monotonic()
                 if self.refresh_host(forced):
                     # A Nokia was plugged in or removed: look again at once instead of waiting for the next cycle.
-                    self._last_scan, self._ports, self.last_refresh = 0, None, None
+                    self._reset_scan()
+                    self.last_refresh = None
             except (ValueError, OSError):
                 self.status.update(state="connection-error", connected=0)
             self.write_snapshot()
@@ -407,6 +438,7 @@ class Agent:
 
     def close(self):
         self.stop.set()
+        gammu_native.terminate_workers()  # an identify in flight must not keep a COM port open after the Bridge is gone
         self.revoke()
         if self.started:
             self.server.shutdown()
@@ -607,8 +639,7 @@ def claim_single_instance():
 
 def main(argv=None):
     if len(sys.argv) == 4 and sys.argv[1] == "--gammu-worker":
-        gammu_native.worker_files(Path(sys.argv[2]), Path(sys.argv[3]))
-        return
+        return gammu_native.worker_files(Path(sys.argv[2]), Path(sys.argv[3]))
     parser = argparse.ArgumentParser(description="SymPort local Nokia S60 Bridge")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--data-dir", type=Path)

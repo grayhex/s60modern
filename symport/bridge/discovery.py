@@ -13,29 +13,48 @@ from symport.phone.models import documented_model
 
 
 def serial_candidates():
+    """Nokia COM ports, AT-capable ones first.
+
+    pyserial reports no VID for ids like `NMWCD\\VID_0421&...`, so Nokia drivers are recognised by their description/hwid text
+    too. Each row carries a `kind`: `modem` (the AT port, e.g. “Nokia E72 USB Modem”), `serial` or `javacomm` (the
+    “USB Serial Port” the S60 Java runtime uses: not an AT port, never opened by the Bridge)."""
     try:
         from serial.tools import list_ports
     except ImportError:
         return [], "pyserial is unavailable; configure an existing Gammu connection manually"
-    result = []
+    found = []
     for port in list_ports.comports():
         description = " ".join(
             str(x or "") for x in (port.manufacturer, port.description, port.product)
         )
-        if port.vid != 0x0421 and "nokia" not in description.casefold():
+        text = (description + " " + str(getattr(port, "hwid", "") or "")).casefold()
+        if port.vid != 0x0421 and "nokia" not in text and "vid_0421" not in text:
             continue
         if not isinstance(port.device, str) or not re.fullmatch(
             r"COM[0-9]{1,4}|/dev/[A-Za-z0-9_./-]{1,120}", port.device
         ):
             continue
+        found.append((port, description, text))
+    has_modem = any("modem" in text for _, _, text in found)
+    result = []
+    for port, description, text in found:
+        if "javacomm" in text or (
+            has_modem and "usb serial port" in text and "modem" not in text
+        ):
+            kind = "javacomm"
+        else:
+            kind = "modem" if "modem" in text else "serial"
         result.append(
             {
                 "port": port.device,
+                "kind": kind,
                 "model_profile": documented_model(description),
                 "vendor": "Nokia",
                 "source": "host-serial-enumeration",
             }
         )
+    order = {"modem": 0, "serial": 1, "javacomm": 2}
+    result.sort(key=lambda row: (order[row["kind"]], row["port"]))
     return result, None
 
 

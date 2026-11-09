@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -56,6 +57,38 @@ def available() -> bool:
     return importlib.util.find_spec("gammu") is not None
 
 
+_ACTIVE: set[subprocess.Popen] = set()
+_ACTIVE_LOCK = threading.Lock()
+
+
+def _run_worker(command, timeout, *, input=None, **popen):
+    """subprocess.run that remembers its child, so a closing Bridge can stop an identify that holds a COM port."""
+    with subprocess.Popen(command, **popen) as process:
+        with _ACTIVE_LOCK:
+            _ACTIVE.add(process)
+        try:
+            stdout, stderr = process.communicate(input, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise
+        finally:
+            with _ACTIVE_LOCK:
+                _ACTIVE.discard(process)
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def terminate_workers() -> None:
+    """Kill every running Gammu worker (Bridge shutdown). The waiting caller sees a failed request, nothing else."""
+    with _ACTIVE_LOCK:
+        running = list(_ACTIVE)
+    for process in running:
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
 def invoke(config: str, action: str, **values) -> dict:
     if not available():
         raise PhoneOperationError(
@@ -64,13 +97,14 @@ def invoke(config: str, action: str, **values) -> dict:
     try:
         if getattr(sys, "frozen", False):
             return invoke_frozen(config, action, values)
-        result = subprocess.run(
+        result = _run_worker(
             [sys.executable, "-m", __name__],
+            900 if action == "batch" else 20 if action == "identify" else 180,
             input=json.dumps(dict(values, config=config, action=action), default=encode),
             text=True,
-            capture_output=True,
-            timeout=900 if action == "batch" else 20 if action == "identify" else 180,
-            check=False,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         if result.returncode or len(result.stdout) > 32 * 1024 * 1024:
             raise PhoneOperationError(
@@ -350,13 +384,12 @@ def invoke_frozen(config: str, action: str, values: dict) -> dict:
         with source.open("x", encoding="utf-8") as output:
             os.chmod(source, 0o600)
             json.dump(dict(values, config=config, action=action), output, default=encode)
-        result = subprocess.run(
+        result = _run_worker(
             [sys.executable, "--gammu-worker", str(source), str(target)],
+            900 if action == "batch" else 20 if action == "identify" else 180,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=900 if action == "batch" else 20 if action == "identify" else 180,
-            check=False,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode or not target.is_file() or target.stat().st_size > 32 * 1024 * 1024:
@@ -369,20 +402,28 @@ def invoke_frozen(config: str, action: str, values: dict) -> dict:
         return data
 
 
-def worker_files(source: Path, target: Path):
-    if (
-        source.parent != target.parent
-        or not source.parent.name.startswith("symport-gammu-")
-        or source.is_symlink()
-        or target.exists()
-        or source.stat().st_size > 32 * 1024 * 1024
-    ):
-        raise ValueError("Invalid private worker request")
-    data = json.loads(source.read_text(encoding="utf-8"), object_hook=decode)
-    result = process_request(data)
-    with target.open("x", encoding="utf-8") as output:
-        os.chmod(target, 0o600)
-        json.dump(result, output, default=encode)
+def worker_files(source: Path, target: Path) -> int:
+    """Run one request from the private IPC folder; the exit code is 0 on success.
+
+    The Bridge may close in the middle of an identify and remove the folder (or kill this worker): that is not an error
+    worth a traceback, so the vanished folder is a quiet non-zero exit."""
+    try:
+        if (
+            source.parent != target.parent
+            or not source.parent.name.startswith("symport-gammu-")
+            or source.is_symlink()
+            or target.exists()
+            or source.stat().st_size > 32 * 1024 * 1024
+        ):
+            raise ValueError("Invalid private worker request")
+        data = json.loads(source.read_text(encoding="utf-8"), object_hook=decode)
+        result = process_request(data)
+        with target.open("x", encoding="utf-8") as output:
+            os.chmod(target, 0o600)
+            json.dump(result, output, default=encode)
+    except FileNotFoundError:
+        return 1
+    return 0
 
 
 def process_request(data: dict) -> dict:

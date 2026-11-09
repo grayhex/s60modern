@@ -316,3 +316,197 @@ def test_dku2_probe_is_read_only_rate_limited_and_honest(agent, monkeypatch):
     agent.host = host(usb=[WPD])
     agent._dku2_key = None
     assert agent._dku2_profiles([]) == []
+
+
+# ---- silent COM port, AT back-off, DKU-2 after silent COM ports (real E72 report: COM8 modem silent, COM7 Java comm) ----
+
+MODEM = {"port": "COM8", "kind": "modem", "model_profile": None, "vendor": "Nokia", "source": "x"}
+JAVA = {"port": "COM7", "kind": "javacomm", "model_profile": None, "vendor": "Nokia", "source": "x"}
+
+
+def test_a_port_that_opens_but_does_not_answer_is_com_silent_not_just_free():
+    snapshot = host(usb=[WPD, {**WPD, "class": "Modem", "mi": "00"}], serial=[MODEM, JAVA])
+    report = doctor.diagnose(snapshot, {"COM8": "silent"}, 0, parts=[], dku2="no-response")
+    assert report["phone"]["code"] == "com-silent" and report["phone"]["status"] == doctor.WARN
+    english, russian = report["phone"]["action"]
+    for expected in ("off and on", "reconnect the cable", "after the phone has finished starting", "another cable", "DKU-2 connection did not answer"):
+        assert expected in english, expected
+    for expected in ("Выключите и включите", "переподключите кабель", "после полной загрузки", "другой кабель", "DKU-2 тоже не ответило"):
+        assert expected in russian, expected
+    checks = {c["id"]: c for c in report["checks"]}
+    assert checks["com-busy"]["status"] == doctor.WARN and "silent" in checks["com-busy"]["summary"][0]
+    assert "free" not in checks["com-busy"]["summary"][0] and checks["gammu"]["status"] == doctor.WARN
+    assert "(+1 Java comm, not used)" in checks["com"]["summary"][0], "the Java comm port is listed but not counted as an AT port"
+    pc = next(r for r in report["routes"] if r["id"] == "pc-suite")
+    assert pc["status"] == doctor.WARN and "silent" in pc["summary"][0] and "DKU-2" in pc["action"][0]
+    # the DKU-2 sentence follows the real probe result
+    assert "has not been tried yet" in doctor.diagnose(snapshot, {"COM8": "silent"}, 0, parts=[])["phone"]["action"][0]
+    assert "DKU-2" not in doctor.diagnose(snapshot, {"COM8": "silent"}, 0, parts=[], dku2="identified:dku2")["phone"]["action"][0]
+    # busy still wins over silent; a free, unprobed port stays the older generic status
+    assert doctor.diagnose(snapshot, {"COM8": "busy"}, 0, parts=[])["phone"]["code"] == "com-busy"
+    assert doctor.diagnose(snapshot, {"COM8": "free"}, 0, parts=[])["phone"]["code"] == "gammu-not-identified"
+    # a lone Java comm port is not an AT route at all
+    assert doctor.diagnose(host(usb=[WPD], serial=[JAVA]), {}, 0, parts=[])["phone"]["code"] != "gammu-not-identified"
+    text = doctor.export_text(report)
+    assert "com-silent" in text and "COM8" not in text and "COM7" not in text
+    for forbidden in ("IMEI", "serial number", "instance", "VID_0421"):
+        assert forbidden.lower() not in text.lower(), forbidden
+
+
+def test_com_state_reports_silent_only_for_a_port_that_opens(monkeypatch):
+    import sys
+    import types
+
+    class Port:
+        def __init__(self, name, timeout=None):
+            self.name = name
+
+        def close(self):
+            pass
+
+    exceptions = types.SimpleNamespace(SerialException=type("SerialException", (Exception,), {}))
+    fake = types.ModuleType("serial")
+    fake.Serial, fake.SerialException = Port, exceptions.SerialException
+    monkeypatch.setitem(sys.modules, "serial", fake)
+    assert doctor.com_state("COM8") == "free"
+    assert doctor.com_state("COM8", silent=True) == "silent"
+
+    def busy(name, timeout=None):
+        raise fake.SerialException("could not open port 'COM8': PermissionError(13, 'Access is denied.')")
+
+    fake.Serial = busy
+    assert doctor.com_state("COM8", silent=True) == "busy", "a held port is busy, not silent"
+
+
+@pytest.fixture
+def scanning(agent, monkeypatch):
+    """An Agent that polls two fake Nokia ports; `identify` calls are recorded and always fail unless told otherwise."""
+    agent.config["auto_usb"] = True
+    state = {"ports": [MODEM, JAVA], "identify": [], "answer": None, "now": 1000.0}
+    monkeypatch.setattr(bridge_main, "serial_candidates", lambda: (list(state["ports"]), None))
+    monkeypatch.setattr(bridge_main, "windows_nokia_volumes", lambda: ([], None))
+    monkeypatch.setattr(bridge_main.time, "monotonic", lambda: state["now"])
+
+    def invoke(config, action, **kw):
+        state["identify"].append(Path(config).read_text())
+        if state["answer"]:
+            return state["answer"]
+        raise ValueError("no answer")
+
+    monkeypatch.setattr(bridge_main.gammu_native, "invoke", invoke)
+    monkeypatch.setattr(bridge_main, "is_windows", lambda: False)  # DKU-2 has its own tests
+    return agent, state
+
+
+def test_at_polling_never_opens_the_java_comm_port_and_asks_the_modem_first(scanning):
+    agent, state = scanning
+    state["ports"] = [JAVA, MODEM, {**MODEM, "port": "COM9", "kind": "serial"}]   # even if listed in another order
+    agent.scan()
+    devices = [text.split("device = ")[1].split("\n")[0] for text in state["identify"]]
+    assert devices == ["COM8", "COM9"] and "COM7" not in devices, "Java comm is skipped, modem port first"
+    assert all(text.endswith("connection = at\n") and "dku2" not in text for text in state["identify"])
+    assert agent.at_failed == {"COM8", "COM9"}
+
+
+def test_polling_backs_off_while_silent_and_starts_over_on_changes(scanning):
+    agent, state = scanning
+    delays = []
+    for _ in range(7):
+        agent._last_scan = 0 if not delays else agent._last_scan
+        state["now"] += agent._scan_delay + 1
+        agent.scan()
+        delays.append(agent._scan_delay)
+    assert delays == [60, 120, 240, 480, 600, 600, 600], "30 s doubles up to ten minutes while nothing answers"
+    calls = len(state["identify"])
+    state["now"] += 100
+    agent.scan()
+    assert len(state["identify"]) == calls, "no new identify before the backed-off delay has passed"
+
+    state["ports"] = [MODEM]                       # the set of ports changed
+    agent.scan()
+    assert len(state["identify"]) == calls + 1 and agent._scan_delay == 60, "back-off restarts at 30 s (then doubles)"
+    for _ in range(3):
+        state["now"] += agent._scan_delay + 1
+        agent.scan()
+    assert agent._scan_delay == 480
+    agent._reset_scan()                            # USB hotplug / Rescan (rescan.request) → immediately, from 30 s
+    assert agent._scan_delay == 30
+    before = len(state["identify"])
+    agent.scan()
+    assert len(state["identify"]) == before + 1
+
+    (agent.root / "rescan.request").write_text("1")
+    assert agent._rescan_requested() is True
+    agent._reset_scan()
+    assert agent._scan_delay == 30 and agent._ports is None
+
+
+def test_an_answering_phone_keeps_the_normal_rhythm(scanning):
+    agent, state = scanning
+    state["answer"] = {"manufacturer": "Nokia", "model": "E72"}
+    agent.scan()
+    assert agent._scan_delay == 30 and agent.at_failed == set()
+    assert agent._auto_profiles and agent._auto_profiles[0]["kind"] == "gammu-usb"
+
+
+def test_no_identify_starts_while_another_operation_holds_the_manager(scanning):
+    agent, state = scanning
+    with agent.manager.lock:
+        agent.scan()
+    assert state["identify"] == [] and agent._ports is None, "skipped, and tried again on the next loop"
+    agent.stop.set()
+    agent.scan()
+    assert state["identify"] == [], "nothing starts once the Bridge is closing"
+    agent.stop.clear()
+    agent.scan()
+    assert len(state["identify"]) == 1
+
+
+def test_busy_ports_are_not_probed(scanning):
+    agent, state = scanning
+    agent.com = {"COM8": "busy"}
+    agent.scan()
+    assert state["identify"] == [], "another program holds it: identify would only time out"
+
+
+def test_dku2_is_tried_when_com_ports_exist_but_stay_silent(scanning, monkeypatch):
+    agent, state = scanning
+    monkeypatch.setattr(bridge_main, "is_windows", lambda: True)
+    monkeypatch.setattr(bridge_main.gammu_native, "available", lambda: True)
+    agent.host = host(usb=[WPD])
+    agent.scan()
+    modes = [text.split("connection = ")[1].strip() for text in state["identify"]]
+    assert modes == ["at", "dku2", "dku2phonet"], "AT on the modem port first, then the Nokia-specific connections"
+    assert agent.dku2_state == "no-response"
+    # unchanged USB set → the cached result, no second DKU-2 attempt on the next (backed-off) cycle
+    state["now"] += agent._scan_delay + 1
+    agent.scan()
+    assert [t.split("connection = ")[1].strip() for t in state["identify"]].count("dku2") == 1
+    # Rescan tries it again; an AT answer makes DKU-2 unnecessary
+    agent._reset_scan()
+    agent._dku2_key = None
+    state["answer"] = {"manufacturer": "Nokia", "model": "E72"}
+    state["identify"].clear()
+    agent.scan()
+    assert [t.split("connection = ")[1].strip() for t in state["identify"]] == ["at"]
+
+
+def test_closing_the_bridge_stops_workers_first(agent, monkeypatch):
+    order = []
+    monkeypatch.setattr(bridge_main.gammu_native, "terminate_workers", lambda: order.append(("kill", agent.stop.is_set())))
+    agent.close()
+    assert order == [("kill", True)], "the stop flag is set before the workers are killed, so nothing restarts"
+
+
+def test_com_probing_skips_the_java_port_and_is_throttled(agent, monkeypatch):
+    opened = []
+    monkeypatch.setattr(bridge_main, "host_candidates", lambda: host(serial=[MODEM, JAVA]))
+    monkeypatch.setattr(bridge_main, "usb_devices", lambda: ([], None))
+    monkeypatch.setattr(doctor, "com_state", lambda port, silent=False: opened.append(port) or "free")
+    agent.refresh_host(force=True)
+    assert opened == ["COM8"], "the Java comm port is never opened"
+    agent.refresh_host()
+    assert opened == ["COM8"], "not reopened on every cycle"
+    agent.at_failed.add("COM8")
+    agent.com = {"COM8": "free"}
+    assert agent.doctor_report()["phone"]["code"] == "com-silent", "a failed AT identify turns 'free' into 'silent'"

@@ -277,3 +277,85 @@ def test_relay_failures_are_classified_without_leaking_details():
     assert classify(HTTPError("https://x", 500, "no", {}, None)) == "server-error"
     assert all(is_local_network(h) for h in ("192.168.1.5", "10.0.0.2", "127.0.0.1", "nas.home.arpa", "localhost"))
     assert not any(is_local_network(h) for h in ("symport.example.org", "8.8.8.8"))
+
+
+def _ports(monkeypatch, rows):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    serial, tools = ModuleType("serial"), ModuleType("serial.tools")
+    tools.list_ports = SimpleNamespace(comports=lambda: [SimpleNamespace(manufacturer="", product="", **row) for row in rows])
+    monkeypatch.setitem(sys.modules, "serial", serial)
+    monkeypatch.setitem(sys.modules, "serial.tools", tools)
+
+
+def test_nokia_ports_are_matched_by_text_modem_first_and_java_comm_is_never_an_at_port(monkeypatch):
+    """Nokia E72, Windows 11, driver 7.1.32.75: pyserial gives no VID for NMWCD ids; COM7 is the Java comm port."""
+    from symport.bridge.discovery import serial_candidates
+
+    _ports(monkeypatch, [
+        {"vid": None, "device": "COM7", "description": "Nokia E72 USB Serial Port (COM7)", "hwid": "NMWCDC\\VID_0421&PID_0223&IF_JAVACOMM"},
+        {"vid": None, "device": "COM8", "description": "Nokia E72 USB Modem (COM8)", "hwid": "NMWCD\\VID_0421&PID_0223&MI_00"},
+        {"vid": None, "device": "COM1", "description": "Communications Port (COM1)", "hwid": "ACPI\\PNP0501"},
+    ])
+    rows, error = serial_candidates()
+    assert not error and [(r["port"], r["kind"]) for r in rows] == [("COM8", "modem"), ("COM7", "javacomm")]
+    # the "USB Serial Port" next to a Modem port is a Java comm port even without the JAVACOMM marker in its hwid
+    _ports(monkeypatch, [
+        {"vid": None, "device": "COM7", "description": "Nokia E72 USB Serial Port (COM7)", "hwid": "NMWCDC\\VID_0421&PID_0223"},
+        {"vid": None, "device": "COM8", "description": "Nokia E72 USB Modem (COM8)", "hwid": "NMWCD\\VID_0421&PID_0223"},
+    ])
+    assert [(r["port"], r["kind"]) for r in serial_candidates()[0]] == [("COM8", "modem"), ("COM7", "javacomm")]
+    # alone, a Nokia "USB Serial Port" (no Modem port) stays a normal AT candidate; vendor filtering is unchanged
+    _ports(monkeypatch, [{"vid": 0x0421, "device": "COM3", "description": "USB Serial Port (COM3)", "hwid": "USB VID:PID=0421:0001"}])
+    assert [(r["port"], r["kind"]) for r in serial_candidates()[0]] == [("COM3", "serial")]
+    _ports(monkeypatch, [{"vid": 1, "device": "COM4", "description": "Other modem", "hwid": "USB VID:PID=0001:0001"}])
+    assert serial_candidates()[0] == []
+
+
+def test_gammu_worker_exits_quietly_when_the_bridge_removed_its_folder(tmp_path, monkeypatch):
+    """The Bridge closing in the middle of an identify removes the IPC folder: no FileNotFoundError traceback."""
+    import shutil
+
+    from symport.phone import gammu_native
+
+    folder = tmp_path / "symport-gammu-abc"
+    folder.mkdir()
+    source, target = folder / "request.json", folder / "response.json"
+    source.write_text("{}")
+    shutil.rmtree(folder)
+    assert gammu_native.worker_files(source, target) == 1
+    monkeypatch.setattr("sys.argv", ["SymPortBridge.exe", "--gammu-worker", str(source), str(target)])
+    from symport.bridge import main as bridge_main
+
+    assert bridge_main.main() == 1
+    # a request that was never valid is still an error, not a silent success
+    other = tmp_path / "not-a-worker-folder"
+    other.mkdir()
+    (other / "request.json").write_text("{}")
+    with pytest.raises(ValueError):
+        gammu_native.worker_files(other / "request.json", other / "response.json")
+
+
+def test_closing_the_bridge_kills_a_running_gammu_worker():
+    import sys
+    import threading
+    import time
+
+    from symport.phone import gammu_native
+
+    outcome = {}
+
+    def run():
+        outcome["result"] = gammu_native._run_worker([sys.executable, "-c", "import time; time.sleep(60)"], 90)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not gammu_native._ACTIVE and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert gammu_native._ACTIVE, "the worker is registered while it runs"
+    gammu_native.terminate_workers()
+    thread.join(10)
+    assert not thread.is_alive() and outcome["result"].returncode != 0
+    assert not gammu_native._ACTIVE
