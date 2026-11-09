@@ -7,6 +7,7 @@ proves the encoding, not behaviour on any other phone, with a locked keypad, wit
 from __future__ import annotations
 
 import json
+import os
 import struct
 
 import pytest
@@ -211,6 +212,7 @@ def test_setupapi_detail_size_is_8_on_x64_and_never_5():
     assert 5 not in (pccs_windows.detail_cbsize(8), pccs_windows.detail_cbsize(4))
 
 
+@pytest.mark.skipif(os.name == "nt", reason="this is the non-Windows answer")
 def test_windows_module_is_inert_elsewhere():
     assert pccs_windows.interface_paths() == []
     with pytest.raises(PccsError):

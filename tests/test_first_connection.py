@@ -64,6 +64,8 @@ def test_usb_scan_reports_unavailable_host(tmp_path):
 
 def test_windows_usb_scan_keeps_only_vid_pid_class_status(monkeypatch):
     monkeypatch.setattr(discovery.os, "name", "nt")
+    # This test covers the PowerShell fallback; on a real Windows runner SetupAPI would otherwise answer first.
+    monkeypatch.setattr(discovery.winpnp, "enumerate_present", lambda *a, **k: None)
     output = json.dumps([
         {"Class": "Ports", "Status": "OK", "InstanceId": "USB\\VID_0421&PID_01A2\\SECRET-SERIAL-1"},
         {"Class": "USB", "Status": "Error", "InstanceId": "USB\\VID_0421&PID_01A2&MI_00\\SECRET-SERIAL-1"},

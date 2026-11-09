@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -48,7 +49,6 @@ def test_enumeration_filters_by_instance_prefix_and_signals_unavailability():
     rows = winpnp.enumerate_present("USB", "USB\\VID_0421", api)
     assert [r["InstanceId"].split("\\")[1] for r in rows] == ["VID_0421&PID_0223", "vid_0421&pid_01a2&mi_00"]
     assert api.asked == ["USB"]
-    assert winpnp.enumerate_present("USB", "USB\\VID_0421") is None, "not Windows → the caller falls back"
 
     class Broken:
         def devices(self, enumerator):
@@ -56,6 +56,11 @@ def test_enumeration_filters_by_instance_prefix_and_signals_unavailability():
 
     assert winpnp.enumerate_present("USB", "USB\\VID_0421", Broken()) is None
     assert winpnp.devinfo_size(8) == 32 and winpnp.devinfo_size(4) == 28
+
+
+@pytest.mark.skipif(os.name == "nt", reason="this is the non-Windows answer")
+def test_enumeration_is_unavailable_outside_windows():
+    assert winpnp.enumerate_present("USB", "USB\\VID_0421") is None, "not Windows → the caller falls back"
 
 
 def test_usb_scan_uses_setupapi_without_starting_powershell(monkeypatch):
@@ -127,7 +132,11 @@ def test_a_window_that_cannot_be_created_leaves_the_poll_as_the_fallback():
 
     watcher = device_watch.DeviceWatcher(lambda: None, broken)
     assert watcher.start() is False and not watcher.running
-    assert device_watch.DeviceWatcher(lambda: None).start() is False, "no Windows → no window"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="creates a real window on Windows")
+def test_no_window_outside_windows():
+    assert device_watch.DeviceWatcher(lambda: None).start() is False
 
 
 @pytest.fixture
