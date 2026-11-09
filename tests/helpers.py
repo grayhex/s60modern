@@ -1,13 +1,17 @@
 """Test helpers: synthetic E32 images, fake external tools, minimal repo copies."""
 from __future__ import annotations
 
-import fcntl
 import shutil
 import stat
 import struct
 import subprocess
 import sys
 from pathlib import Path
+
+try:  # POSIX only; Windows CI runs these tests without parallel workers and without the native compilers
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 from symport.analysis.e32 import header_crc
 from symport.sis.fields import uid_checksum
@@ -23,7 +27,8 @@ def s60_tools(build: bool = False) -> bool:
     lock: a worker waits for a build in progress instead of racing it, and `build=True` builds when they are missing."""
     skc, bmconv = REPO / "tools/s60/bin/skc", REPO / "tools/s60/bin/bmconv"
     with (REPO / "tools/s60/.build.lock").open("w") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        if fcntl:
+            fcntl.flock(handle, fcntl.LOCK_EX)
         if build and not (skc.exists() and bmconv.exists()):
             subprocess.run(["bash", str(REPO / "tools/s60/build.sh")], check=True, capture_output=True)
         return skc.exists() and bmconv.exists()
