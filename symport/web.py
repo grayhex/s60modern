@@ -215,6 +215,18 @@ class Workbench:
         self.last_run: dict | None = None
         self.backups = BackupStore(default_root(repo))
 
+    def ca_fingerprint(self) -> str | None:
+        """SHA-256 of the local CA certificate (DER), announced to the Windows Bridge so it can pin that CA."""
+        if self.tls_ca is None:
+            return None
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes
+
+        try:
+            return x509.load_pem_x509_certificate(self.tls_ca.read_bytes()).fingerprint(hashes.SHA256()).hex()
+        except (OSError, ValueError):
+            return None
+
     def resolve_lab_package(self, data):
         source, key = data.get('source'), data.get('reference')
         if source == 'theme-studio':
@@ -509,7 +521,9 @@ def make_handler(state: Workbench):
             if path == "/api/auth/session":
                 session = self._session()
                 self._json({"mode": "lan", "authenticated": bool(session), "tls": state.access.tls,
-                            "ca": state.tls_ca is not None, **({"csrf": session.csrf} if session else {})})
+                            "ca": state.tls_ca is not None,
+                            **({"csrf": session.csrf, **({"ca_sha256": state.ca_fingerprint()} if state.tls_ca else {})}
+                               if session else {})})
                 return True
             if path in ("/auth/login.js", "/auth/login.css"):
                 self._asset(path.lstrip("/"), "text/javascript; charset=utf-8" if path.endswith(".js") else "text/css; charset=utf-8")

@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from symport.phone import DeviceManager, gammu_native
 from symport.phone.connections import load_profiles
@@ -50,6 +51,7 @@ class Agent:
         self.manager.before_execute = self.guard_volume
         self.refresh_config()
         self.server.pair = self.pair
+        self.server.relay_state = self.relay_state
 
     def guard_volume(self, data):
         identifier = data.get("device")
@@ -85,19 +87,59 @@ class Agent:
             self.relay.stop.set()
             self.relay = None
 
-    def pair(self, origin, token):
+    def relay_state(self, origin):
+        relay = self.relay
+        return relay.public_state() if relay and relay.origin == origin else None
+
+    def pin_ca(self, origin, fingerprint):
+        """Fetch SymPort's public CA from the origin the operator just approved and keep it only if it has exactly
+        the fingerprint the web page announced. Verification against it replaces installing it in Windows."""
+        import ssl
+        from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
+
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+
+        from .relay import is_local_network
+
+        if not origin.startswith("https://"):
+            raise ValueError("A pinned CA applies to https origins")
+        context = ssl.create_default_context()
+        context.check_hostname, context.verify_mode = False, ssl.CERT_NONE  # public certificate; checked by hash below
+        handlers = [HTTPSHandler(context=context)]
+        if is_local_network(urlsplit(origin).hostname or ""):
+            handlers.append(ProxyHandler({}))
+        with build_opener(*handlers).open(Request(origin + "/symport-ca.crt"), timeout=15) as reply:
+            pem = reply.read(16385)
+        if len(pem) > 16384:
+            raise ValueError("Unexpected certificate size")
+        certificate = x509.load_pem_x509_certificate(pem)
+        digest = certificate.fingerprint(hashes.SHA256()).hex()
+        constraints = certificate.extensions.get_extension_for_class(x509.BasicConstraints).value
+        if digest != fingerprint or not constraints.ca:
+            raise ValueError("The certificate does not match the fingerprint shown by SymPort")
+        target = self.root / "trusted-ca"
+        target.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = target / (digest + ".pem")
+        path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+        return path
+
+    def pair(self, origin, token, ca_sha256=None):
+        shown = (" Certificate fingerprint " + ca_sha256[:16] + "…") if ca_sha256 else ""
         if not self.server.approve or not self.server.approve(
             {
                 "action": "Connect SymPort at "
                 + origin
                 + " for up to two hours. Phone data will be sent to this server."
+                + shown
             }
         ):
             return False
         from .relay import OutboundRelay
 
+        ca_file = self.pin_ca(origin, ca_sha256) if ca_sha256 else None
         self.revoke()
-        self.relay = OutboundRelay(self, origin, token)
+        self.relay = OutboundRelay(self, origin, token, ca_file)
         self._relays = [r for r in self._relays if r.thread.is_alive()]
         self._relays.append(self.relay)
         self.relay.thread.start()

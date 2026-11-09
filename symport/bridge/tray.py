@@ -153,6 +153,28 @@ def settings_window(root_dir: Path, port: int) -> int:
     return result
 
 
+RELAY_HINTS = {
+    "tls-untrusted": "this PC does not trust the SymPort certificate. Pair again from SymPort (the Bridge then pins it), "
+                     "or install the certificate from the SymPort login page.",
+    "tls-error": "the TLS handshake with SymPort failed. Check that SymPort is opened with https.",
+    "unreachable": "SymPort cannot be reached from this PC (address, port, firewall or network).",
+    "rejected": "SymPort refused the access lease. Request access again from SymPort.",
+    "server-error": "SymPort answered with an error. Check its container log.",
+}
+
+
+def relay_summary(agent) -> str:
+    relay = agent.relay
+    if relay is None:
+        return "not paired"
+    state = relay.public_state()
+    if state["state"] == "connected":
+        return "connected"
+    if state["state"] == "connecting":
+        return "connecting…"
+    return "not connected — " + RELAY_HINTS.get(state["reason"], str(state["reason"]))
+
+
 def run_tray(agent, key):
     import subprocess
 
@@ -189,6 +211,8 @@ def run_tray(agent, key):
             + str(status["connected"])
             + "\nNokia candidates: "
             + str(status["candidates"])
+            + "\nSymPort link: "
+            + relay_summary(agent)
             + "\n\n"
             + "\n".join(status.get("diagnostics", []))
             + "\n\nOperation logs contain action/status only. Settings and private backups: "

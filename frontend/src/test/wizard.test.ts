@@ -131,6 +131,25 @@ describe('first-connection wizard steps', () => {
     expect(step(input, 'bridge').code).toBe('origin-not-secure');
   });
 
+  it("explains why an approved Bridge cannot connect, using the Bridge's own report", () => {
+    const input = base({
+      connection: { mode: 'windows-bridge', connected: false },
+      probe: { kind: 'ok', version: '0.3.5', pairAvailable: true },
+      pair: { kind: 'ok', version: '0.3.5' },
+      grace: true,
+      bridgeRelay: { state: 'error', reason: 'tls-untrusted' },
+    });
+    const pairing = step(input, 'pairing');
+    expect(pairing.status).toBe('failed');
+    expect(pairing.code).toBe('relay-tls-untrusted');
+    expect(pairing.fixes.length).toBeGreaterThan(0);
+    const waiting = step(
+      { ...input, bridgeRelay: { state: 'connecting', reason: null } },
+      'pairing',
+    );
+    expect(waiting.status).toBe('loading');
+  });
+
   it.each([
     ['declined', 'pair-declined'],
     ['timeout', 'pair-timeout'],
