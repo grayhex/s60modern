@@ -86,6 +86,7 @@ class OutboundRelay:
         self.stop = threading.Event()
         # state: connecting → connected | error. `reason` is one of classify() and carries no URL or secret.
         self.state, self.reason, self.changed = "connecting", None, time.monotonic()
+        self.expires_at: float | None = None  # when the server ends this access, as the server last said; memory only
         self.pinned = ca_file is not None  # verification uses the CA the operator approved at pairing
         handlers = [NoRedirect()]
         host = urlsplit(self.origin).hostname or ""
@@ -120,11 +121,18 @@ class OutboundRelay:
     def public_state(self):
         return {"state": self.state, "reason": self.reason, "pinned": self.pinned}
 
+    def remaining(self) -> int | None:
+        """Seconds of SymPort access left, as the server last said; None until the first answer. Memory only."""
+        return None if self.expires_at is None else max(0, int(self.expires_at - time.monotonic()))
+
     def run(self):
         while not self.stop.is_set() and not self.agent.stop.is_set():
             try:
                 message = self.call("poll", {})
                 self.mark("connected")
+                left = message.get("expires_in")
+                if type(left) is int and 0 <= left <= 86400:
+                    self.expires_at = time.monotonic() + left
                 work = message.get("request")
                 if not work:
                     continue

@@ -36,6 +36,12 @@ export const deviceSchema = z.object({
   capability_matrix: z.record(z.string(), capabilityStateSchema).optional(),
   capability_fingerprint: z.string().optional(),
   failure: z.object({ reason: z.string() }).nullish(),
+  /** Which route this row belongs to and what the Bridge made of it; no phone data, no interface path. */
+  route: maybeText,
+  route_state: maybeText,
+  recommended_for: z.array(z.string()).optional(),
+  route_preference: maybeText,
+  dead_end: z.boolean().optional(),
   capabilities_checked_at: z.string().optional(),
   sms_send_verified: z.boolean().optional(),
   usb_mode: maybeText,

@@ -8,6 +8,8 @@ import os
 import secrets
 from pathlib import Path
 
+from . import routes
+
 
 def data_directory() -> Path:
     return Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".local/share"))) / "SymPortBridge"
@@ -54,7 +56,7 @@ def load_key(root: Path) -> str:
 def load_config(root: Path) -> dict:
     path = root / "settings.json"
     if not path.exists():
-        return {"schema": 1, "auto_usb": True, "origins": [], "gammu_config": "", "volumes": {}}
+        return {"schema": 1, "auto_usb": True, "origins": [], "gammu_config": "", "volumes": {}, "transport_preference": "auto"}
     if path.is_symlink() or path.stat().st_size > 65536:
         raise ValueError("Invalid settings")
     result = json.loads(path.read_text(encoding="utf-8"))
@@ -73,9 +75,11 @@ def load_config(root: Path) -> dict:
         or any(not isinstance(o, str) or not origin_allowed(o, {o}) for o in origins)
     ):
         raise ValueError("Invalid allowed origins")
-    for key in ("auto_usb", "websocket", "update_check"):
+    for key in ("auto_usb", "websocket", "update_check", "notifications"):
         if key in result and type(result[key]) is not bool:
             raise ValueError("Invalid boolean setting")
+    if result.get("transport_preference", "auto") not in routes.PREFERENCES:
+        raise ValueError("Invalid transport preference")
     for key in ("gammu_config", "connections_file"):
         if key in result and not isinstance(result[key], str):
             raise ValueError("Invalid configuration path")
@@ -97,3 +101,13 @@ def save_config(root: Path, data: dict):
         temporary.replace(root / "settings.json")
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def set_preference(root: Path, value: str) -> dict:
+    """Store the route the user chose (“Use” in the Connections window). The Bridge applies it within a few seconds."""
+    if value not in routes.PREFERENCES:
+        raise ValueError("Invalid transport preference")
+    config = load_config(root)
+    config["transport_preference"] = value
+    save_config(root, config)
+    return config

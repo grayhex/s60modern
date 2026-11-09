@@ -148,7 +148,14 @@ export const originProblem = (o: WizardInput['origin']) =>
   o.protocol !== 'https:' && !isLocal(o.hostname);
 
 export type Mode =
-  'pc-suite' | 'gammu' | 'mass-storage' | 'mtp' | 'bluetooth' | 'obex-usb' | 'obex-opp';
+  | 'pc-suite'
+  | 'gammu'
+  | 'usb-obex'
+  | 'mass-storage'
+  | 'mtp'
+  | 'bluetooth'
+  | 'obex-usb'
+  | 'obex-opp';
 /** Connections that expose files only and never identify a phone (a drive letter, or Windows MTP). */
 export const filesOnly = (d: { transport?: string | null | undefined }) =>
   d.transport === 'mounted-volume' || d.transport === 'wpd';
@@ -156,6 +163,7 @@ export const filesOnly = (d: { transport?: string | null | undefined }) =>
 export function transportMode(d: Device): Mode {
   if (d.transport === 'mounted-volume') return 'mass-storage';
   if (d.transport === 'wpd') return 'mtp';
+  if (d.transport === 'pccs') return 'usb-obex';
   if (d.transport === 'obex-opp') return 'obex-opp';
   if (d.transport === 'obexftp') return d.connection_kind === 'usb' ? 'obex-usb' : 'bluetooth';
   if (d.connection_kind === 'gammu-bluetooth' || d.connection_kind === 'gammu-s60')
@@ -166,6 +174,10 @@ export function transportMode(d: Device): Mode {
 export const MODE_TEXT: Record<Mode, [string, string]> = {
   'pc-suite': ['PC Suite (USB, Gammu)', 'PC Suite (USB, Gammu)'],
   gammu: ['Gammu connection', 'Подключение Gammu'],
+  'usb-obex': [
+    'Nokia USB OBEX (contacts and calendar, read-only)',
+    'Nokia USB OBEX (контакты и календарь, только чтение)',
+  ],
   'mass-storage': ['Mass Storage (memory card files only)', 'Mass Storage (только файлы карты)'],
   mtp: ['Windows MTP (files, read-only)', 'Windows MTP (файлы, только чтение)'],
   bluetooth: ['Bluetooth', 'Bluetooth'],

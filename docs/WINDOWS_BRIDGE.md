@@ -87,10 +87,18 @@ Uninstall via *Settings → Apps* (asks whether to delete settings and the pairi
 
 ## Tray and configuration
 
-Tray **Settings**: automatic Nokia USB discovery (default on), optional current-user
-Windows sign-in autostart (default off), Gammu configuration and connection-profile
-JSON. **Diagnostics** opens the *Driver & Connection Doctor* (below). Operation logs contain action,
-time and status only. Settings/private backups live in `%LOCALAPPDATA%\SymPortBridge`.
+Tray **Settings** (grouped: *Connection*, *Updates*, *Start-up*): automatic Nokia USB discovery (default on), the route to the
+phone (`transport_preference`: automatic / Gammu / USB OBEX / MTP), notifications (default on), the daily update check,
+optional current-user Windows sign-in autostart (default off), Gammu configuration and connection-profile JSON.
+**Connections** (the default tray action, also “Diagnostics”) opens the *Driver & Connection Doctor* (below). Operation logs
+contain action, time and status only. Settings/private backups live in `%LOCALAPPDATA%\SymPortBridge`.
+
+**Tray icon.** A small dot shows the state: grey = no phone, amber = a phone is found but silent or its channel is busy, green =
+at least one route works, red = the SymPort link has an error (it wins over the phone state). The tooltip reads like
+“Nokia E72 · contacts and calendar (USB OBEX) · SymPort connected”. Toasts announce connect, disconnect, a route change, the
+SymPort link coming and going and — once, ten minutes before the end — the end of the SymPort access. The first report after
+start only sets the baseline; toasts can be switched off in Settings. Nothing about them is stored.
+
 Full-volume backup jobs in the development tools still operate on volumes enrolled
 on the server. For Bridge use the existing selected-folder backup and PIM backups;
 Mass Storage never provides SMS or phonebook access.
@@ -142,19 +150,59 @@ Buttons: **Rescan** (asks the running Bridge to look again at once), **Copy diag
 connects to a server on its own) and **Close**. New Nokia USB devices are noticed within about 10 seconds without pressing
 Rescan. A Windows PnP record alone is never shown as “Connected”.
 
+**Connections window.** One plain sentence on top (“Phone found: contacts and calendar (USB OBEX).” / “The phone is there but does
+not answer…”), then the routes with their state and a **Use** button each (it stores `transport_preference` in `settings.json`;
+the Bridge applies it within a few seconds, never under a running operation) and **Automatic (recommended)**, then the SymPort
+link with the **remaining access time** and **Reconnect to SymPort** (opens only the address this Bridge was paired with, like
+*Pair / Help*), the last search time with a progress bar for **Rescan**, **Copy diagnostics**, **Save report…** (the same text as a
+`.txt` file, by default on the desktop; no personal data) and **Open log folder**. The access lasts two hours and lives in
+memory only: after the Bridge restarts nothing is restored and SymPort has to be asked again.
+
+**Hotplug.** A hidden top-level window receives `WM_DEVICECHANGE` and wakes the Bridge, which re-reads the USB list at once. The
+10-second USB poll stays as the fallback. The AT back-off for a silent phone starts over only when the *set* of Nokia USB devices
+changed, so a burst of unrelated device messages does not make the Bridge hammer a silent modem port.
+
+**Less PowerShell.** The Nokia USB list and the paired-Bluetooth list are read through SetupAPI/CfgMgr32 (ctypes); PowerShell
+remains as the fallback if that fails, for the memory-card association (CIM) and for the Portable Device (MTP) shell access.
+Every helper process the Bridge starts (PowerShell, the settings and Connections windows) is tracked and ended when the Bridge
+closes; closing also cancels a running USB OBEX read, which sends *CloseStore* and *Disconnect* first.
+
 The USB list shows each Nokia node's class (e.g. `WPD`, `Ports`, `Modem`), the composite-interface number and Device Manager's error code (28 = no driver installed). The copied text contains versions, VID:PID, statuses and counts only — no IMEI, USB serial numbers or PnP instance IDs,
 paths, addresses (the SymPort URL is reduced to its scheme), keys, tokens, contacts or SMS.
 
 
-### Three independent routes
+### Four independent routes
 
-The Doctor shows three routes side by side; none implies another, and a missing one is never reported as the only dead end:
+The Doctor shows four routes side by side; none implies another, and a missing one is never reported as the only dead end.
+Every route has one **state**: `unavailable` (not there), `busy` (another program holds it), `silent` (found, the phone does
+not answer), `available` (the phone answered a safe probe) or `verified` (a real operation completed in this session).
 
-| Route | What it gives | What it needs |
+| Route (`id`) | What it gives | What it needs |
 |---|---|---|
-| **Files over MTP** (Windows Portable Devices) | browse and download files, **read-only** | the phone shown by Windows as a portable device (`WPD`, e.g. Nokia E72 `0421:0223`); no Nokia driver, no COM port |
-| **Mass storage** (drive letter) | files and backups, including writes with the usual confirmations | “Mass storage” mode on the phone |
-| **PC Suite** (Gammu, COM or DKU-2) | identity, contacts, calendar, SMS — only what the capability matrix proves | the Nokia Connectivity Cable driver (installed by you) and “PC Suite” mode |
+| **Gammu** (`gammu`; COM or DKU-2) | identity, contacts, calendar, SMS — only what the capability matrix proves | the Nokia Connectivity Cable driver (installed by you) and “PC Suite” mode |
+| **USB OBEX** (`pccs`) | contacts and calendar, **read-only** | the Nokia driver (`nmwcd`) and “PC Suite” mode; Nokia PC Suite closed |
+| **Files over MTP** (`mtp`; Windows Portable Devices) | browse and download files, **read-only** | the phone shown by Windows as a portable device (`WPD`, e.g. Nokia E72 `0421:0223`); no Nokia driver, no COM port |
+| **Mass storage** (`mass-storage`; drive letter) | files and backups, including writes with the usual confirmations | “Mass storage” mode on the phone |
+
+**Which route serves which job** (`transport_preference` in `settings.json`, set in the tray settings window; default `auto`):
+
+| Preference | Contacts and calendar | SMS | Files |
+|---|---|---|---|
+| `auto` | Gammu when it is **verified**, otherwise USB OBEX | Gammu only | Mass storage, otherwise MTP (read-only) |
+| `gammu` | Gammu only | Gammu | — (says so) |
+| `pccs` | USB OBEX only | — | — |
+| `mtp` | — | — | MTP only |
+
+An explicit preference uses only that route and names what it cannot do. The choice is made when the Bridge detects or rescans
+the phone and when the settings change, **never while a phone operation holds the Bridge** (the running operation keeps its route;
+the change is applied afterwards). Every switch is written to the operations journal as `route-switch` (time, action, status — no
+phone data); a route chosen in the SymPort app is journalled as `connection-select` and sends nothing to the phone.
+**Gammu dead end** = every Gammu attempt (COM ports, DKU-2) is over, Gammu never became `verified`, and USB OBEX works: the
+Doctor then says so, and the app offers to switch (“Gammu не достучался до телефона, контакты и календарь доступны по USB OBEX”).
+The connection rows carry `route`, `route_state`, `recommended_for`, `route_preference` and `dead_end` — nothing from the phone
+and no interface path. The real Gammu error code (`ERR_DEVICENOTEXIST`, `ERR_DEVICEBUSY`, `ERR_TIMEOUT`, …) is shown in the Doctor
+from a **fixed list** with a hint in English and Russian — never raw Gammu or Windows text. `ERR_DEVICENOTEXIST` over the
+Nokia-specific (DKU-2) connection is the known limit of the x64 Gammu build; the hint then points to the USB OBEX route.
 
 **How the phone is recognised as a Nokia.** Windows lists a Portable Device in “This PC” with a Shell path. Two rules, either is
 enough: (1) the vendor id is in the path (`…usb#vid_0421&pid_xxxx#…`, older Windows); (2) Windows 11's generic MTP driver
@@ -189,6 +237,32 @@ makes one short, read-only Gammu `identify` over `connection = dku2` and then `d
 connections that find the device through the Nokia driver). It is repeated only when the USB device set changes or you press
 Rescan; a silent phone just records “no response”. Whether a given phone answers this way with the installed driver is not
 guaranteed and not verified for the E72/Windows 11 combination.
+
+**USB OBEX route (Nokia PCCS) — contacts and calendar without COM or Gammu.** The Nokia USB driver (`nmwcd`) exposes three
+interfaces per phone; the one with interface class `{4F919100-4ADF-11D5-882D-00B0D02FE381}` speaks OBEX, and PC Suite talks to
+the phone's sync engine through it. The Bridge enumerates that class with SetupAPI (ctypes), opens the interface with
+`CreateFile`, finds the one of the (usually three) interfaces that answers an OBEX *Connect* with the Folder Browsing target
+`F9EC7BC4-953C-11D2-984E-525400DC9E09`, and reads the phone book and the calendar with the sequence OpenStore → ResetChangeInfo →
+GetStoreFormat → SetRemoteStoreFormat → ListChanges → ReadItems → CloseStore. The Phonet (`…9102`) and LCIF (`…910C`) interfaces
+are never opened. The channel is opened per operation and closed at once; `CloseStore` and *Disconnect* are sent also after a
+failure and when the Bridge is closed.
+
+* **Read-only.** `CommitChanges`, `CreateItems`, `DeleteItems` and any other write are not implemented. The only PUT is
+  *SetRemoteStoreFormat* (the format the PC wants to receive); it changes no stored record. Files, SMS, tasks, telemetry and
+  identity are *unsupported* on this route with a stated reason.
+* **`contacts.read` / `calendar.read` become `available` only after the phone answered a real Connect + OpenStore** (a probe that
+  also sends ResetChangeInfo and CloseStore and reads no record); the presence of the interface proves nothing. The route
+  is `verified` after the first complete read in this session.
+* **Name of the connection.** The optional OBEX capability object gives Manufacturer, Model and software version, so the
+  connection can be called “Nokia E72”; without it it is “Nokia (USB OBEX)”. The IMEI/`<SN>` field of that object is never
+  read, copied, logged or shown.
+* **Busy channel.** If Nokia PC Suite (or Nokia Suite) holds the channel, `CreateFile` is refused (error 5/32) and the route is
+  `busy`: “close Nokia PC Suite”. Right after PC Suite was closed the first *Connect* can fail; a read retries up to three
+  times with a pause of a few seconds.
+* **Not verified:** only one E72 (S60 3.2) was tried by hand, with one and two records. Other S60 phones, large stores (the ids are
+  requested in batches of 20 — paging is unproven), a locked phone, an open PC Suite and writes are not verified. The
+  checks in CI cover the byte layout (against names recorded from PC Suite) and the parsers on synthetic data.
+* `SYMPORT_PCCS=0` switches the route off.
 
 **Drivers.** SymPort never installs, downloads or replaces drivers, never asks you to disable driver signature enforcement
 or Secure Boot, and never installs anything silently. If the Nokia driver is missing, the Doctor says so and points to the

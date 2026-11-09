@@ -432,7 +432,7 @@ def test_windows_serial_and_disk_candidates_are_only_hints(monkeypatch):
         ]
         return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
 
-    monkeypatch.setattr(discovery.subprocess, "run", run)
+    monkeypatch.setattr(discovery.children, "run", run)
     disks, error = discovery.windows_nokia_volumes()
     assert not error and len(disks) == 1 and disks[0]["root"] == "E:/"
     assert disks[0]["model_profile"]["model"] == "N97 MINI"

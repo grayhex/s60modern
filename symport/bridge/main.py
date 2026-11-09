@@ -17,7 +17,8 @@ from symport.phone import DeviceManager, gammu_native
 from symport.phone.connections import load_profiles
 from symport.phone.local import LocalTransports
 
-from . import VERSION, doctor
+from . import VERSION, children, doctor, routes
+from .device_watch import DeviceWatcher
 from .discovery import (
     documented_model,
     host_candidates,
@@ -68,6 +69,18 @@ class Agent:
         self.at_failed: set[str] = set()  # ports that opened but whose identify got no answer
         # Nokia-specific Gammu connection (DKU-2 / DKU-2 Phonet): found through the Nokia USB driver, no COM port needed.
         self.dku2_state = "not-tried"
+        # Last Gammu error code (fixed list, see routes.GAMMU_CODES) of an identify that failed; '' when none or after a success.
+        self.gammu_error = ""
+        self.last_report: dict | None = None
+        self.scan_at: float | None = None  # wall-clock time of the last host scan (shown in the Connections window)
+        # Hotplug: WM_DEVICECHANGE (and the 10 s USB poll as the fallback) wake the monitor loop; the AT back-off is only
+        # reset when the set of Nokia USB devices really changed.
+        self.hotplug = threading.Event()
+        self.watcher: DeviceWatcher | None = None
+        # Which route serves which job (routes.choose) and what the transport shows on its rows; changes are journalled.
+        self.selection: dict | None = None
+        self.selection_logged = False
+        self.route_hints: dict = {"states": {}, "recommended_for": {}}
         self._dku2_key = None
         self._dku2_at = 0.0
         self._dku2_cache: list[dict] = []
@@ -202,7 +215,12 @@ class Agent:
                     json.dump({"schema": 1, "connections": profiles}, file)
                 temporary.replace(generated)
                 os.environ["SYMPORT_CONNECTIONS_FILE"] = str(generated)
+                previous = getattr(self.manager, "transport", None)
                 self.manager.transport = LocalTransports(self.root, volume_identities=self._volume_identities)
+                self.manager.transport.route_hints = getattr(self, "route_hints", {})
+                closer = getattr(previous, "close", None)
+                if callable(closer):
+                    closer()  # a replaced transport must not keep a phone store or an interface open
                 self._enrolled_roots = dict(self._auto_roots)
                 self._enrolled_identities = dict(self._volume_identities)
                 self.server.origins = set(config.get("origins", []))
@@ -224,6 +242,7 @@ class Agent:
             return  # closing, or another phone operation is running: do not start an identify on top of it
         self._ports = ports
         self._last_scan = time.monotonic()
+        self.scan_at = time.time()
         profiles = []
         if self.config.get("auto_usb", True) and not self.config.get("gammu_config"):
             # Modem port first; the Java comm port is not an AT port and is never opened.
@@ -242,6 +261,7 @@ class Agent:
                     if str(observed.get("manufacturer", "")).casefold() != "nokia" or not profile:
                         continue
                     self.at_failed.discard(candidate["port"])
+                    self.gammu_error = ""
                     profiles.append(
                         {
                             "id": name,
@@ -253,8 +273,9 @@ class Agent:
                             "edition": profile["edition"],
                         }
                     )
-                except (ValueError, OSError):
+                except (ValueError, OSError) as exc:
                     self.at_failed.add(candidate["port"])  # the port opened but nobody answered
+                    self.gammu_error = routes.gammu_code(exc) or self.gammu_error
                     continue
         volumes, disk_reason = (
             windows_nokia_volumes() if self.config.get("auto_usb", True) else ([], None)
@@ -295,6 +316,7 @@ class Agent:
         changed = False
         if force or self.host is None or now - self.host_at >= 60:
             self.host, self.host_at, self._usb_at = host_candidates(), now, now
+            self.scan_at = time.time()
             key = self._usb_key(self.host["usb"])
             changed = self._usb_signature is not None and key != self._usb_signature
             self._usb_signature = key
@@ -321,12 +343,62 @@ class Agent:
         return changed
 
     def doctor_report(self) -> dict:
-        relay = self.relay.public_state() if self.relay else None
+        relay = {**self.relay.public_state(), "expires_in": self.relay.remaining()} if self.relay else None
         origin = self.relay.origin if self.relay else None
         # A port that opens fine but whose AT identify got no answer is "silent", not just "free".
         com = {p: ("silent" if state == "free" and p in self.at_failed else state) for p, state in self.com.items()}
         return doctor.diagnose(self.host or {}, com, int(self.status.get("identified", 0)), relay, origin,
-                               dku2=self.dku2_state)
+                               dku2=self.dku2_state, gammu_error=self.gammu_error, pccs=self.pccs_status(), scan_at=self.scan_at,
+                               preference=self.preference(), gammu_tried=self.gammu_tried(), selection=self.selection)
+
+    # ---- routes: which way to the phone serves which job ------------------------------------------------------------
+    def _sync_preference(self) -> None:
+        """The Connections window stores the chosen route in settings.json; pick it up every cycle (the scan back-off
+        must not delay it)."""
+        try:
+            value = load_config(self.root).get("transport_preference", "auto")
+        except (ValueError, OSError):
+            return
+        self.config["transport_preference"] = value
+
+    def preference(self) -> str:
+        value = self.config.get("transport_preference", "auto")
+        return value if value in routes.PREFERENCES else "auto"
+
+    def pccs_status(self) -> dict | None:
+        adapter = getattr(self.manager.transport, "pccs", None)
+        return adapter.route_status() if adapter is not None else None
+
+    def gammu_tried(self) -> bool:
+        """Every Gammu attempt is over: all AT ports answered nothing, or (no AT port) the DKU-2 connection did not answer."""
+        ports = [p["port"] for p in (self.host or {}).get("serial", []) if p.get("kind") != "javacomm"]
+        return (bool(ports) and all(p in self.at_failed for p in ports)) or self.dku2_state == "no-response"
+
+    def route_states(self) -> dict:
+        com = {p: ("silent" if state == "free" and p in self.at_failed else state) for p, state in self.com.items()}
+        return doctor.route_states(self.host or {}, com, int(self.status.get("identified", 0)), self.dku2_state, self.pccs_status())
+
+    def update_route_selection(self) -> bool:
+        """Choose the route per job. Never while a phone operation holds the manager (the choice is kept and applied on the
+        next pass). A real change is written to the operations journal: action, time, status, no phone data."""
+        states = self.route_states()
+        chosen = routes.choose(self.preference(), states, gammu_tried=self.gammu_tried(),
+                               operation_in_progress=self.manager.lock.locked(), current=self.selection)
+        if chosen.get("deferred"):
+            return False
+        before = {job: (self.selection or {}).get(job) for job in routes.JOBS}
+        after = {job: chosen.get(job) for job in routes.JOBS}
+        self.selection = chosen
+        self.route_hints.clear()
+        self.route_hints.update(states=states, recommended_for=routes.recommended_for(chosen), dead_end=chosen["dead_end"],
+                                preference=chosen["preference"])
+        if after != before and (self.selection_logged or any(after.values())):
+            self.selection_logged = True
+            try:
+                self.manager.record("route-switch", "success")
+            except OSError:
+                pass
+        return after != before
 
     def write_snapshot(self) -> None:
         """The diagnostics window (a separate process) reads this file; it contains only the safe report."""
@@ -335,7 +407,9 @@ class Agent:
         try:
             with temporary.open("w", encoding="utf-8") as file:
                 os.chmod(temporary, 0o600)
-                json.dump(self.doctor_report(), file, ensure_ascii=False)
+                report = self.doctor_report()
+                self.last_report = report  # the tray icon and tooltip follow it
+                json.dump(report, file, ensure_ascii=False)
             temporary.replace(target)
         except OSError:
             pass
@@ -360,6 +434,7 @@ class Agent:
         if key == self._dku2_key and (self._dku2_cache or time.monotonic() - self._dku2_at < 3600):
             return self._dku2_cache
         self._dku2_key, self._dku2_at, found = key, time.monotonic(), []
+        last_code = ""
         for mode in self.DKU2_MODES:
             config = self.root / f"auto-{mode}.cfg"
             with config.open("w", encoding="utf-8") as file:
@@ -368,7 +443,8 @@ class Agent:
             try:
                 with self.manager.lock:
                     observed = gammu_native.invoke(str(config), "identify")
-            except (ValueError, OSError):
+            except (ValueError, OSError) as exc:
+                last_code = routes.gammu_code(exc) or last_code
                 continue
             profile = documented_model(str(observed.get("model") or ""))
             if str(observed.get("manufacturer", "")).casefold() == "nokia" and profile:
@@ -385,6 +461,7 @@ class Agent:
                 )
                 break
         self._dku2_cache = found
+        self.gammu_error = "" if found else (last_code or self.gammu_error)
         self.dku2_state = ("identified:" + found[0]["id"].removeprefix("auto-")) if found else "no-response"
         return found
 
@@ -419,13 +496,30 @@ class Agent:
                     self.last_refresh = None
             except (ValueError, OSError):
                 self.status.update(state="connection-error", connected=0)
+            self._sync_preference()
+            self.update_route_selection()
             self.write_snapshot()
-            self.stop.wait(3)
+            self._wait_for_work()
+
+    def on_device_change(self) -> None:
+        """Called from the WM_DEVICECHANGE window thread: only wakes the monitor loop."""
+        self.hotplug.set()
+
+    def _wait_for_work(self) -> None:
+        """Sleep up to 3 s; a device change wakes the loop at once. A short settle time lets a burst of messages end, and the
+        USB list is re-read at the next pass instead of waiting for the 10 s poll."""
+        if self.hotplug.wait(3) and not self.stop.is_set():
+            self.stop.wait(1.0)
+            self.hotplug.clear()
+            self._usb_at = 0.0
 
     def start(self):
         threading.Thread(target=self.server.serve_forever, daemon=True, name="bridge-http").start()
         self.started = True
         threading.Thread(target=self.monitor, daemon=True, name="bridge-discovery").start()
+        if is_windows() and self.auto:
+            self.watcher = DeviceWatcher(self.on_device_change)
+            self.watcher.start()  # False → the 10 s poll stays the only detector
         if self.config.get("websocket", False):
             from .events import start_events
 
@@ -439,6 +533,12 @@ class Agent:
     def close(self):
         self.stop.set()
         gammu_native.terminate_workers()  # an identify in flight must not keep a COM port open after the Bridge is gone
+        if self.watcher is not None:
+            self.watcher.stop()
+        closer = getattr(self.manager.transport, "close", None)
+        if callable(closer):
+            closer()  # cancels a running USB OBEX read; its CloseStore/Disconnect are sent before this returns
+        children.terminate_all()  # windows and PowerShell helpers the Bridge started
         self.revoke()
         if self.started:
             self.server.shutdown()
@@ -491,6 +591,16 @@ def self_test(report: Path | None):
     assert identify('E7-00', rm='RM-626')['id'] == 'nokia-e7'
     assert identify('E7')['symbian'] is None
     assert identify('Nokia 7610')['id'] == 'nokia-7610' and identify('Nokia 7610 Supernova') is None
+    # The USB OBEX route and the tray helpers must be inside the exe (no cryptography, no symport.web needed).
+    from symport.phone import nokia_pccs, pccs_adapter, pccs_windows
+
+    from . import children, device_watch, status, winpnp
+
+    assert nokia_pccs.NAME_CLOSE_STORE.hex() == "5953434e203a6c43736f53656f7465720000"
+    assert pccs_windows.detail_cbsize(8) == 8 and winpnp.devinfo_size(8) == 32 and pccs_adapter.PccsAdapter.id == "nokia-pccs"
+    assert routes.choose("auto", {"gammu": "silent", "pccs": "available"})["contacts"] == "pccs"
+    assert status.tray_state({"link": {"code": "not-paired"}, "routes": [], "usb": []}) == status.NONE
+    assert children.alive() == [] and device_watch.DeviceWatcher(lambda: None).running is False
 
     with tempfile.TemporaryDirectory(prefix="symport-bridge-check-") as tmp:
         root = Path(tmp)

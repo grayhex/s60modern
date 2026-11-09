@@ -11,9 +11,11 @@ import importlib.util
 import os
 import platform
 import sys
+import time
 from urllib.parse import urlsplit
 
 from . import VERSION
+from . import routes as route_model
 
 OK, WARN, FAIL, INFO = "ok", "warn", "fail", "info"
 Text = tuple[str, str]  # (English, Russian)
@@ -353,46 +355,78 @@ def classify_link(relay: dict | None) -> str:
     return "connecting"
 
 
-def routes(host: dict, com: dict[str, str], identified: int, dku2: str) -> list[dict]:
-    """The three independent ways to a Nokia, each with its own state. None of them implies another."""
+def gammu_state(host: dict, com: dict[str, str], identified: int, dku2: str) -> str:
+    if identified > 0:
+        return "verified"
+    if "busy" in com.values():
+        return "busy"
+    if "silent" in com.values() or at_ports(host) or dku2 == "no-response":
+        return "silent"
+    return "unavailable"
+
+
+def route_states(host: dict, com: dict[str, str], identified: int, dku2: str, pccs: dict | None) -> dict[str, str]:
+    """One state per route (see ``routes.STATES``). None of them implies another."""
+    usb = host.get("usb") or []
+    portable = host.get("portable") or []
+    if sum(len(p.get("storages") or []) for p in portable):
+        mtp = "available"
+    elif portable or any(str(r.get("class")).upper() == "WPD" for r in usb):
+        mtp = "silent"
+    else:
+        mtp = "unavailable"
+    return {
+        "gammu": gammu_state(host, com, identified, dku2),
+        "pccs": (pccs or {}).get("state") if (pccs or {}).get("state") in route_model.STATES else "unavailable",
+        "mtp": mtp,
+        "mass-storage": "available" if host.get("volumes") else "unavailable",
+    }
+
+
+STATUS_OF = {"verified": OK, "available": OK, "silent": WARN, "busy": FAIL, "unavailable": INFO}
+
+
+def routes(host: dict, com: dict[str, str], identified: int, dku2: str, *, gammu_error: str = "", pccs: dict | None = None,
+           selection: dict | None = None) -> list[dict]:
+    """The four independent ways to a Nokia (Gammu, USB OBEX, MTP, Mass storage), each with its own state."""
     usb = host.get("usb") or []
     portable = host.get("portable") or []
     storages = sum(len(p.get("storages") or []) for p in portable)
     wpd_class = any(str(r.get("class")).upper() == "WPD" for r in usb)
     if storages:
-        mtp = (OK, ("Files over Windows Portable Devices (MTP): available, read-only",
-                    "Файлы через Windows Portable Devices (MTP): доступны, только чтение"), None)
+        mtp = (("Files over Windows Portable Devices (MTP): available, read-only",
+                "Файлы через Windows Portable Devices (MTP): доступны, только чтение"), None)
     elif portable or wpd_class:
-        mtp = (WARN, ("Windows shows a portable device but no readable storage",
-                      "Windows показывает переносное устройство, но хранилище недоступно"),
+        mtp = (("Windows shows a portable device but no readable storage",
+                "Windows показывает переносное устройство, но хранилище недоступно"),
                ("Unlock the phone and choose “Media transfer” or “PC Suite”, then press “Rescan”.",
                 "Разблокируйте телефон, выберите «Передача медиа» или «PC Suite» и нажмите «Повторить поиск»."))
     else:
-        mtp = (INFO, ("Files over MTP: no portable device", "Файлы через MTP: переносного устройства нет"), None)
+        mtp = (("Files over MTP: no portable device", "Файлы через MTP: переносного устройства нет"), None)
     if host.get("volumes"):
-        mass = (OK, ("Mass storage (drive letter): available", "Mass storage (буква диска): доступен"), None)
+        mass = (("Mass storage (drive letter): available", "Mass storage (буква диска): доступен"), None)
     else:
-        mass = (INFO, ("Mass storage (drive letter): not active", "Mass storage (буква диска): не активен"),
+        mass = (("Mass storage (drive letter): not active", "Mass storage (буква диска): не активен"),
                 ("Choose “Mass storage” on the phone for a drive letter (files and backups only).",
                  "Выберите на телефоне «Mass storage», чтобы получить букву диска (только файлы и копии)."))
     if identified > 0:
-        pc = (OK, ("PC Suite / contacts and calendar: the phone answered", "PC Suite / контакты и календарь: телефон ответил"), None)
+        pc = (("PC Suite / contacts and calendar: the phone answered", "PC Suite / контакты и календарь: телефон ответил"), None)
     elif "busy" in com.values():
-        pc = (FAIL, ("PC Suite: the COM port is busy", "PC Suite: COM-порт занят"),
+        pc = (("PC Suite: the COM port is busy", "PC Suite: COM-порт занят"),
               ("Close Nokia Suite / Ovi Suite and terminal programs, then rescan.",
                "Закройте Nokia Suite / Ovi Suite и терминальные программы, затем повторите поиск."))
     elif "silent" in com.values():
-        pc = (WARN, ("PC Suite: the COM port opens but the phone is silent", "PC Suite: COM-порт открывается, но телефон молчит"),
+        pc = (("PC Suite: the COM port opens but the phone is silent", "PC Suite: COM-порт открывается, но телефон молчит"),
               ("Switch the phone off and on, reconnect the cable and choose “PC Suite” after it has started; try another cable or "
                "port, then rescan." + (" The Nokia-specific DKU-2 connection did not answer either." if dku2 == "no-response" else ""),
                "Выключите и включите телефон, переподключите кабель, выберите «PC Suite» после загрузки; попробуйте другой кабель "
                "или порт и повторите поиск." + (" Nokia-специфичное подключение DKU-2 тоже не ответило." if dku2 == "no-response" else "")))
     elif at_ports(host):
-        pc = (WARN, ("PC Suite: a COM port exists but the phone did not answer", "PC Suite: COM-порт есть, но телефон не ответил"),
+        pc = (("PC Suite: a COM port exists but the phone did not answer", "PC Suite: COM-порт есть, но телефон не ответил"),
               ("Unlock the phone, keep “PC Suite” mode and rescan.", "Разблокируйте телефон, оставьте «PC Suite» и повторите поиск."))
     elif dku2 == "no-response":
-        pc = (WARN, ("PC Suite: no COM port, and the Nokia-specific Gammu connection (DKU-2) did not answer",
-                     "PC Suite: COM-порта нет, и Nokia-специфичное подключение Gammu (DKU-2) не ответило"),
+        pc = (("PC Suite: no COM port, and the Nokia-specific Gammu connection (DKU-2) did not answer",
+               "PC Suite: COM-порта нет, и Nokia-специфичное подключение Gammu (DKU-2) не ответило"),
               ("The Nokia Connectivity Cable driver is most likely missing or the phone is not in “PC Suite” mode. Install the "
                "driver yourself from Nokia/Microsoft, choose “PC Suite”, replug and rescan. Whether a given phone answers over "
                "DKU-2 is not guaranteed.",
@@ -400,17 +434,57 @@ def routes(host: dict, com: dict[str, str], identified: int, dku2: str) -> list[
                "(у Nokia/Microsoft), выберите «PC Suite», переподключите кабель и повторите поиск. Ответ телефона по DKU-2 "
                "не гарантирован."))
     else:
-        pc = (INFO, ("PC Suite / contacts and calendar: not available", "PC Suite / контакты и календарь: недоступны"),
+        pc = (("PC Suite / contacts and calendar: not available", "PC Suite / контакты и календарь: недоступны"),
               ("Needs the Nokia Connectivity Cable driver and “PC Suite” mode.",
                "Нужен драйвер Nokia Connectivity Cable и режим «PC Suite»."))
+    states = route_states(host, com, identified, dku2, pccs)
+    # The real Gammu error code (from a fixed list), with a hint, is added to every Gammu route that did not answer.
+    hint = route_model.gammu_hint(gammu_error, dku2=dku2 == "no-response" and not at_ports(host)) if states["gammu"] != "verified" else None
+    if hint:
+        action = pc[1] or ("", "")
+        pc = (pc[0], ((action[0] + " " if action[0] else "") + f"[{gammu_error}] " + hint[0],
+                      (action[1] + " " if action[1] else "") + f"[{gammu_error}] " + hint[1]))
+    pstate = states["pccs"]
+    if pstate in route_model.USABLE:
+        pccs_row = (("USB OBEX (PCCS): contacts and calendar are readable, read-only",
+                     "USB OBEX (PCCS): контакты и календарь доступны, только чтение"), None)
+    elif pstate == "busy":
+        pccs_row = (("USB OBEX: the channel is held by another program", "USB OBEX: канал занят другой программой"),
+                    ("Close Nokia PC Suite and rescan.", "Закройте Nokia PC Suite и повторите поиск."))
+    elif pstate == "silent":
+        pccs_row = (("USB OBEX: the Nokia interface is there, but the phone does not answer",
+                     "USB OBEX: интерфейс Nokia есть, но телефон не отвечает"),
+                    ("Unlock the phone, choose “PC Suite” and rescan. Right after PC Suite was closed the first connection can "
+                     "fail; the Bridge retries.",
+                     "Разблокируйте телефон, выберите «PC Suite» и повторите поиск. Сразу после закрытия PC Suite первое "
+                     "подключение может не пройти; Bridge повторяет попытку."))
+    else:
+        pccs_row = (("USB OBEX: no Nokia USB OBEX interface", "USB OBEX: интерфейса Nokia USB OBEX нет"),
+                    ("Needs the Nokia driver (nmwcd) and “PC Suite” mode.", "Нужен драйвер Nokia (nmwcd) и режим «PC Suite»."))
+    if selection and selection.get("dead_end"):
+        pc = (pc[0], ((pc[1][0] + " " if pc[1] else "") + "Contacts and calendar are available over USB OBEX.",
+                      (pc[1][1] + " " if pc[1] else "") + "Контакты и календарь доступны по USB OBEX."))
+    recommended = route_model.recommended_for(selection or {})
+    rows = {"gammu": pc, "pccs": pccs_row, "mtp": mtp, "mass-storage": mass}
     return [
-        {"id": identifier, "status": status, "summary": list(summary), "action": list(action) if action else None}
-        for identifier, (status, summary, action) in (("mtp-files", mtp), ("mass-storage", mass), ("pc-suite", pc))
+        {
+            "id": identifier,
+            "state": states[identifier],
+            "status": STATUS_OF[states[identifier]],
+            "summary": list(rows[identifier][0]),
+            "action": list(rows[identifier][1]) if rows[identifier][1] else None,
+            "capabilities": list(route_model.SERVES[identifier]),
+            "read_only": identifier in route_model.READ_ONLY,
+            "recommended_for": recommended.get(identifier, []),
+        }
+        for identifier in route_model.ROUTE_IDS
     ]
 
 
 def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | None = None, origin: str | None = None,
-             parts: list[dict] | None = None, dku2: str = "not-tried") -> dict:
+             parts: list[dict] | None = None, dku2: str = "not-tried", *, gammu_error: str = "", pccs: dict | None = None,
+             preference: str = "auto", gammu_tried: bool = False, selection: dict | None = None,
+             scan_at: float | None = None) -> dict:
     """The complete report. `host` is symport.bridge.discovery.host_candidates(); `relay` is OutboundRelay.public_state()."""
     usb = host.get("usb") or []
     problems = [row for row in usb if row.get("status") == "problem"]
@@ -422,6 +496,9 @@ def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | Non
     classes = ", ".join(sorted({str(row.get("class") or "?") for row in usb}))
     phone_code = classify_phone(host, com, identified)
     link_code = classify_link(relay)
+    states = route_states(host, com, identified, dku2, pccs)
+    # The Agent passes its own (applied) selection; a bare report computes what the preference would choose now.
+    selection = selection or route_model.choose(preference, states, gammu_tried=gammu_tried)
     checks = [
         _check("usb", OK if usb else FAIL,
                (f"Nokia on USB: {len(usb)} ({classes})" if usb else "No Nokia on USB",
@@ -475,7 +552,12 @@ def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | Non
         "frozen": bool(getattr(sys, "frozen", False)),
         "phone": {"code": phone_code, "status": status, "summary": list(summary), "action": list(action) if action else None},
         "checks": checks,
-        "routes": routes(host, com, identified, dku2),
+        "routes": routes(host, com, identified, dku2, gammu_error=gammu_error, pccs=pccs, selection=selection),
+        "preference": selection["preference"],
+        "selection": {job: selection.get(job) for job in route_model.JOBS},
+        "dead_end": bool(selection.get("dead_end")),
+        "gammu_error": gammu_error if gammu_error in route_model.GAMMU_CODES else "",
+        "scan_at": scan_at,
         "dku2": dku2.split(":")[0],
         "usb": [{k: row.get(k) for k in ("vid", "pid", "class", "status", "mi", "problem_code")} for row in usb],
         "com": [{"state": state} for state in com.values()],
@@ -486,6 +568,7 @@ def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | Non
             "action": list(link_action) if link_action else None,
             "pinned": bool(relay and relay.get("pinned")),
             "origin": origin if origin and link_code != "not-paired" else None,
+            "expires_in": relay.get("expires_in") if relay and link_code == "connected" else None,
         },
         "components": parts,
         "notes": [r for r in host.get("diagnostics", [])][:6],
@@ -507,7 +590,12 @@ def export_text(report: dict) -> str:
         "Checks:",
     ]
     lines += [f"  [{c['status']}] {c['id']}: {c['summary'][0]}" for c in report["checks"]]
-    lines += ["", "Routes:"] + [f"  [{r['status']}] {r['id']}: {r['summary'][0]}" for r in report.get("routes", [])]
+    lines += ["", f"Routes (preference: {report.get('preference', 'auto')}):"]
+    lines += [f"  [{r['status']}] {r['id']} ({r.get('state', '?')}): {r['summary'][0]}"
+              + (f" · used for: {', '.join(r['recommended_for'])}" if r.get("recommended_for") else "")
+              for r in report.get("routes", [])]
+    if report.get("gammu_error"):
+        lines.append(f"  Gammu error code: {report['gammu_error']}")
     lines += ["", "Nokia USB devices (VID:PID class status):"]
     lines += [
         f"  {u['vid']}:{u['pid']} {u['class']} {u['status']}"
@@ -550,13 +638,78 @@ def _component_row(part: dict, russian: bool) -> tuple[str, str]:
     return mark, f"{part['name']} — {state}"
 
 
+ROUTE_NAMES = {
+    "gammu": ("Gammu (PC Suite)", "Gammu (PC Suite)"),
+    "pccs": ("USB OBEX", "USB OBEX"),
+    "mtp": ("MTP (files)", "MTP (файлы)"),
+    "mass-storage": ("Mass storage", "Mass storage"),
+}
+JOB_NAMES = {"contacts": ("contacts", "контакты"), "calendar": ("calendar", "календарь"), "sms": ("SMS", "SMS"), "files": ("files", "файлы")}
+STATE_NAMES = {
+    "unavailable": ("not available", "недоступен"),
+    "busy": ("busy", "занят"),
+    "silent": ("found, the phone is silent", "найден, телефон молчит"),
+    "available": ("available", "доступен"),
+    "verified": ("verified", "проверен"),
+}
+# Route id -> the transport_preference that uses only that route (Mass storage has none: it serves files in `auto`).
+USE_VALUE = {"gammu": "gammu", "pccs": "pccs", "mtp": "mtp"}
+
+
+def jobs_text(selection: dict, russian: bool) -> str:
+    """“contacts and calendar (USB OBEX), files (Mass storage)” from a report's selection."""
+    pick = 1 if russian else 0
+    groups: dict[str, list[str]] = {}
+    for job in route_model.JOBS:
+        route = selection.get(job)
+        if route:
+            groups.setdefault(route, []).append(JOB_NAMES[job][pick])
+    joiner = " и " if russian else " and "
+
+    def names(jobs: list[str]) -> str:
+        return jobs[0] if len(jobs) == 1 else ", ".join(jobs[:-1]) + joiner + jobs[-1]
+
+    return ", ".join(f"{names(jobs)} ({ROUTE_NAMES[route][pick]})" for route, jobs in groups.items())
+
+
+def plain_sentence(report: dict, russian: bool) -> str:
+    """One plain-language sentence on top of the Connections window."""
+    selection = report.get("selection") or {}
+    states = {r["id"]: r.get("state") for r in report.get("routes", [])}
+    jobs = jobs_text(selection, russian)
+    if jobs:
+        return f"Телефон найден: {jobs}." if russian else f"Phone found: {jobs}."
+    if "busy" in states.values():
+        return ("Телефон найден, но канал занят другой программой (например, Nokia PC Suite). Закройте её и повторите поиск."
+                if russian else "The phone is there, but another program (for example Nokia PC Suite) holds the channel. Close it and search again.")
+    if "silent" in states.values() or report.get("usb"):
+        return ("Телефон найден, но не отвечает. Разблокируйте его, выберите режим PC Suite и повторите поиск."
+                if russian else "The phone is there but does not answer. Unlock it, choose PC Suite mode and search again.")
+    return ("Телефон по USB не найден. Проверьте кабель (не только для зарядки), разблокируйте телефон и повторите поиск."
+            if russian else "No phone found on USB. Check the cable (not charge-only), unlock the phone and search again.")
+
+
+def duration(seconds: int, russian: bool) -> str:
+    hours, rest = divmod(max(0, int(seconds)), 3600)
+    minutes = rest // 60
+    if russian:
+        return f"{hours} ч {minutes} мин" if hours else f"{minutes} мин"
+    return f"{hours} h {minutes} min" if hours else f"{minutes} min"
+
+
 def window_model(report: dict, russian: bool) -> dict:
-    """What the diagnostics window shows, as plain data (so it can be tested without a GUI)."""
+    """What the Connections window shows, as plain data (so it can be tested without a GUI)."""
     pick = 1 if russian else 0
     link = report["link"]
     phone = report["phone"]
+    selection = report.get("selection") or {}
+    serving = {route for route in selection.values() if route}
+    preference = report.get("preference", "auto")
+    left = link.get("expires_in")
+    scan_at = report.get("scan_at")
     return {
-        "title": ("SymPort Bridge — диагностика" if russian else "SymPort Bridge — diagnostics") + " " + report["bridge_version"],
+        "title": ("SymPort Bridge — подключения" if russian else "SymPort Bridge — connections") + " " + report["bridge_version"],
+        "sentence": plain_sentence(report, russian),
         "phone_mark": MARKS[phone["status"]],
         "phone_summary": phone["summary"][pick],
         "phone_action": phone["action"][pick] if phone["action"] else "",
@@ -565,6 +718,26 @@ def window_model(report: dict, russian: bool) -> dict:
         + ((" (сертификат закреплён)" if russian else " (certificate pinned)") if link["code"] == "connected" and link["pinned"] else ""),
         "link_action": link["action"][pick] if link["action"] else "",
         "link_origin": link.get("origin"),
+        "link_connected": link["code"] == "connected",
+        "lease": (("Доступ SymPort: осталось " if russian else "SymPort access: ") + duration(left, russian) + ("" if russian else " left"))
+        if isinstance(left, int)
+        else "",
+        "scan": (time.strftime("%H:%M:%S", time.localtime(scan_at)) if isinstance(scan_at, (int, float)) else ""),
+        "preference": preference,
+        "route_rows": [
+            {
+                "id": r["id"],
+                "mark": MARKS[r["status"]],
+                "name": ROUTE_NAMES[r["id"]][pick],
+                "state": STATE_NAMES.get(r.get("state"), ("?", "?"))[pick],
+                "detail": r["summary"][pick],
+                "used": r["id"] in serving,
+                "use": USE_VALUE.get(r["id"]),
+                "chosen": USE_VALUE.get(r["id"]) == preference,
+                "usable": r.get("state") in route_model.USABLE,
+            }
+            for r in report.get("routes", [])
+        ],
         "rows": [(MARKS[r["status"]], r["summary"][pick]) for r in report.get("routes", [])]
         + [("", "")]
         + [(MARKS[c["status"]], c["summary"][pick]) for c in report["checks"]]

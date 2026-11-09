@@ -175,30 +175,14 @@ def test_com_port_is_not_probed_while_the_phone_is_identified(agent, monkeypatch
 # ---- the diagnostics window: Tk is stubbed (it is not available here); the logic and the close paths are real --------
 
 def run_window(tmp_path, monkeypatch, report=None):
-    bound, created, protocols = {}, {}, []
-    tk = types.ModuleType("tkinter")
-    ttk = types.ModuleType("tkinter.ttk")
-    root = mock.MagicMock(name="root")
-    root.bind.side_effect = lambda key, fn: bound.__setitem__(key, fn)
-    root.protocol.side_effect = lambda name, fn: protocols.append((name, fn))
-    tk.Tk = lambda: root
-    widget = lambda *a, **k: mock.MagicMock()  # noqa: E731
-    tk.Text = widget
-    tk.messagebox = mock.MagicMock()
+    from tests.tk_stub import Tk
 
-    def button(parent, text="", command=None, **kw):
-        created[text] = command
-        return mock.MagicMock()
-
-    ttk.Button, ttk.Frame, ttk.Label = button, widget, widget
-    tk.ttk = ttk
-    monkeypatch.setitem(sys.modules, "tkinter", tk)
-    monkeypatch.setitem(sys.modules, "tkinter.ttk", ttk)
-    monkeypatch.setitem(sys.modules, "tkinter.messagebox", tk.messagebox)
+    stub = Tk(monkeypatch)
     if report is not None:
         (tmp_path / "diagnostics.json").write_text(json.dumps(report), encoding="utf-8")
     assert tray.diagnostics_window(tmp_path, 24652) == tray.SETTINGS_CLOSED
-    return root, bound, created, protocols, tk
+    created = {text: command for text, command, _ in stub.buttons}
+    return stub.root, stub.bound, created, stub.protocols, stub
 
 
 def test_diagnostics_window_closes_with_ok_escape_enter_and_x(tmp_path, monkeypatch):
@@ -259,7 +243,7 @@ def test_a_readable_mtp_phone_is_not_a_dead_end():
     report = doctor.diagnose(snapshot, {}, 0, parts=[])
     assert report["phone"]["code"] == "mtp-files" and report["phone"]["status"] == doctor.INFO
     states = {r["id"]: r["status"] for r in report["routes"]}
-    assert states == {"mtp-files": "ok", "mass-storage": "info", "pc-suite": "info"}
+    assert states == {"mtp": "ok", "mass-storage": "info", "gammu": "info", "pccs": "info"}
     action = report["phone"]["action"][0]
     assert "contacts" in action and "COM port" in action and "Mass storage" in action
     # WPD without readable storage stays the cautionary status, never "files available"
@@ -271,14 +255,14 @@ def test_three_routes_are_independent():
     both = doctor.diagnose(host(usb=[WPD], portable=[PORTABLE], volumes=[DRIVE]), {}, 0, parts=[])
     assert {r["id"]: r["status"] for r in both["routes"]}["mass-storage"] == "ok"
     ready = doctor.diagnose(host(usb=[USB_OK], serial=[COM]), {"COM7": "free"}, 1, parts=[])
-    assert {r["id"]: r["status"] for r in ready["routes"]}["pc-suite"] == "ok"
+    assert {r["id"]: r["status"] for r in ready["routes"]}["gammu"] == "ok"
     silent = doctor.diagnose(host(usb=[WPD], portable=[PORTABLE]), {}, 0, parts=[], dku2="no-response")
-    pc = next(r for r in silent["routes"] if r["id"] == "pc-suite")
+    pc = next(r for r in silent["routes"] if r["id"] == "gammu")
     assert pc["status"] == "warn" and "DKU-2" in pc["summary"][0] and "not guaranteed" in pc["action"][0]
     assert silent["dku2"] == "no-response"
     identified = doctor.diagnose(host(usb=[WPD], portable=[PORTABLE]), {}, 0, parts=[], dku2="identified:dku2")
     assert identified["dku2"] == "identified"
-    assert "mtp-files" in doctor.export_text(silent)
+    assert "mtp (" in doctor.export_text(silent)
 
 
 def test_dku2_probe_is_read_only_rate_limited_and_honest(agent, monkeypatch):
@@ -337,7 +321,7 @@ def test_a_port_that_opens_but_does_not_answer_is_com_silent_not_just_free():
     assert checks["com-busy"]["status"] == doctor.WARN and "silent" in checks["com-busy"]["summary"][0]
     assert "free" not in checks["com-busy"]["summary"][0] and checks["gammu"]["status"] == doctor.WARN
     assert "(+1 Java comm, not used)" in checks["com"]["summary"][0], "the Java comm port is listed but not counted as an AT port"
-    pc = next(r for r in report["routes"] if r["id"] == "pc-suite")
+    pc = next(r for r in report["routes"] if r["id"] == "gammu")
     assert pc["status"] == doctor.WARN and "silent" in pc["summary"][0] and "DKU-2" in pc["action"][0]
     # the DKU-2 sentence follows the real probe result
     assert "has not been tried yet" in doctor.diagnose(snapshot, {"COM8": "silent"}, 0, parts=[])["phone"]["action"][0]
@@ -354,7 +338,6 @@ def test_a_port_that_opens_but_does_not_answer_is_com_silent_not_just_free():
 
 
 def test_com_state_reports_silent_only_for_a_port_that_opens(monkeypatch):
-    import sys
     import types
 
     class Port:
@@ -514,7 +497,6 @@ def test_com_probing_skips_the_java_port_and_is_throttled(agent, monkeypatch):
 
 def test_a_windows_11_mtp_phone_without_a_wpd_usb_row_is_still_recognised(monkeypatch):
     """E72: the portable device sits under USB\\MS_COMP_MTP; the Nokia USB rows carry class 'USB', not 'WPD'."""
-    import types
 
     from symport.bridge import discovery
 
@@ -535,8 +517,8 @@ def test_a_windows_11_mtp_phone_without_a_wpd_usb_row_is_still_recognised(monkey
     nokia_usb = {"vid": "0421", "pid": "0223", "class": "USB", "status": "ok", "mi": None, "problem_code": None}
     report = doctor.diagnose(host(usb=[nokia_usb], portable=portable), {}, 0, parts=[])
     assert report["phone"]["code"] == "mtp-files"
-    assert {r["id"]: r["status"] for r in report["routes"]}["mtp-files"] == "ok"
-    assert "read-only" in next(r for r in report["routes"] if r["id"] == "mtp-files")["summary"][0]
+    assert {r["id"]: r["status"] for r in report["routes"]}["mtp"] == "ok"
+    assert "read-only" in next(r for r in report["routes"] if r["id"] == "mtp")["summary"][0]
     text = doctor.export_text(report)
     assert "MS_COMP_MTP" not in text and "9&1FE3119" not in text and "Memory card" not in text
 
@@ -545,7 +527,7 @@ def test_a_locked_phone_is_connected_but_has_no_storage_not_invented_files():
     nokia_usb = {"vid": "0421", "pid": "0223", "class": "USB", "status": "ok", "mi": None, "problem_code": None}
     report = doctor.diagnose(host(usb=[nokia_usb], portable=[{"index": 0, "storages": []}]), {}, 0, parts=[])
     assert report["phone"]["code"] == "mtp-only", "connected, nothing to read: not mtp-files and not a dead-end no-com"
-    mtp = next(r for r in report["routes"] if r["id"] == "mtp-files")
+    mtp = next(r for r in report["routes"] if r["id"] == "mtp")
     assert mtp["status"] == "warn" and "no readable storage" in mtp["summary"][0]
     assert "Unlock the phone" in report["phone"]["action"][0] and "Разблокируйте телефон" in report["phone"]["action"][1]
     # no portable device at all, and no WPD row either: unchanged

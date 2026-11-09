@@ -41,6 +41,10 @@ class BrowserBridgeRelay:
             "expires_in": max(0, int(self.expires - time.monotonic())),
         }
 
+    def remaining(self) -> int:
+        """Seconds of access left; the Bridge shows it and warns shortly before the end. Nothing is stored anywhere."""
+        return max(0, int(self.expires - time.monotonic()))
+
     def close(self):
         with self.condition:
             self.closed = True
@@ -62,8 +66,8 @@ class BrowserBridgeRelay:
             self.last_seen = time.monotonic()
             if self.pending and not self.claimed:
                 self.claimed = True  # never reissue an uncertain write on reconnect
-                return {"request": self.pending}
-            return {"request": None}
+                return {"request": self.pending, "expires_in": self.remaining()}
+            return {"request": None, "expires_in": self.remaining()}
 
     def complete(self, data):
         with self.condition:

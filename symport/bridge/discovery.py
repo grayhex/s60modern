@@ -11,6 +11,8 @@ import subprocess
 # are reported as candidates until explicitly enrolled; S40/other vendors aren't promoted.
 from symport.phone.models import documented_model
 
+from . import children, winpnp
+
 
 def serial_candidates():
     """Nokia COM ports, AT-capable ones first.
@@ -65,12 +67,11 @@ def windows_nokia_volumes():
     # Drive letters and Bluetooth names alone are never treated as phone identity.
     script = """$ErrorActionPreference='Stop'; $items=@(); Get-CimInstance Win32_DiskDrive | Where-Object { $_.InterfaceType -eq 'USB' -and ($_.PNPDeviceID -match 'NOKIA|VID_0421' -or $_.Model -match 'Nokia') } | ForEach-Object { $disk=$_; Get-CimAssociatedInstance -InputObject $disk -Association Win32_DiskDriveToDiskPartition | ForEach-Object { Get-CimAssociatedInstance -InputObject $_ -Association Win32_LogicalDiskToPartition | Where-Object { ($_.DriveType -eq 2 -or $_.DriveType -eq 3) -and $_.DeviceID -ne $env:SystemDrive } | ForEach-Object { $items+=@{root=($_.DeviceID+'/');description=$disk.Model;identity=($disk.PNPDeviceID+'|'+$_.VolumeSerialNumber)} } } }; ConvertTo-Json -InputObject @($items) -Compress"""
     try:
-        result = subprocess.run(
+        result = children.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
             text=True,
             timeout=20,
-            check=False,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode or len(result.stdout) > 65536:
@@ -103,19 +104,27 @@ def paired_bluetooth_candidates():
 
     try:
         if os.name == "nt":
-            script = "$ErrorActionPreference='Stop'; $rows=@(Get-PnpDevice -Class Bluetooth -PresentOnly | Where-Object { $_.InstanceId -match '^BTHENUM\\\\DEV_[0-9A-F]{12}' -and $_.FriendlyName -match 'Nokia' } | Select-Object FriendlyName,InstanceId); ConvertTo-Json -InputObject @($rows) -Compress"
-            result = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            if result.returncode or len(result.stdout) > 65536:
-                raise ValueError("Bluetooth enumeration failed")
-            rows = json.loads(result.stdout)
-            rows = rows if isinstance(rows, list) else [rows]
+            native = winpnp.enumerate_present("BTHENUM", "BTHENUM\\DEV_")  # SetupAPI first: no PowerShell process
+            if native is not None:
+                rows = [
+                    {"FriendlyName": r.get("FriendlyName"), "InstanceId": r.get("InstanceId")}
+                    for r in native
+                    if re.match(r"^BTHENUM\\DEV_[0-9A-F]{12}", str(r.get("InstanceId", "")), re.IGNORECASE)
+                    and re.search("Nokia", str(r.get("FriendlyName") or ""), re.IGNORECASE)
+                ]
+            else:
+                script = "$ErrorActionPreference='Stop'; $rows=@(Get-PnpDevice -Class Bluetooth -PresentOnly | Where-Object { $_.InstanceId -match '^BTHENUM\\\\DEV_[0-9A-F]{12}' -and $_.FriendlyName -match 'Nokia' } | Select-Object FriendlyName,InstanceId); ConvertTo-Json -InputObject @($rows) -Compress"
+                result = children.run(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                if result.returncode or len(result.stdout) > 65536:
+                    raise ValueError("Bluetooth enumeration failed")
+                rows = json.loads(result.stdout)
+                rows = rows if isinstance(rows, list) else [rows]
             candidates = []
             for row in rows[:128]:
                 match = re.search(r"DEV_([A-Fa-f0-9]{12})", row.get("InstanceId", ""))
@@ -180,26 +189,27 @@ def usb_devices(sysfs: str = "/sys/bus/usb/devices"):
     """
     rows: list[dict] = []
     if os.name == "nt":
-        script = (
-            "$ErrorActionPreference='Stop'; $rows=@(Get-PnpDevice -PresentOnly | "
-            "Where-Object { $_.InstanceId -match '^USB\\\\VID_0421' } | "
-            "Select-Object Class,Status,InstanceId,ConfigManagerErrorCode); ConvertTo-Json -InputObject @($rows) -Compress"
-        )
-        try:
-            result = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        parsed = winpnp.enumerate_present("USB", "USB\\VID_" + NOKIA_VID)  # SetupAPI/CfgMgr32 first: no PowerShell process
+        if parsed is None:
+            script = (
+                "$ErrorActionPreference='Stop'; $rows=@(Get-PnpDevice -PresentOnly | "
+                "Where-Object { $_.InstanceId -match '^USB\\\\VID_0421' } | "
+                "Select-Object Class,Status,InstanceId,ConfigManagerErrorCode); ConvertTo-Json -InputObject @($rows) -Compress"
             )
-            if result.returncode or len(result.stdout) > 65536:
-                raise ValueError("USB enumeration failed")
-            parsed = json.loads(result.stdout or "[]")
-            parsed = parsed if isinstance(parsed, list) else [parsed]
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return [], "Windows USB enumeration is unavailable; check Device Manager for a Nokia entry"
+            try:
+                result = children.run(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                if result.returncode or len(result.stdout) > 65536:
+                    raise ValueError("USB enumeration failed")
+                parsed = json.loads(result.stdout or "[]")
+                parsed = parsed if isinstance(parsed, list) else [parsed]
+            except (OSError, ValueError, subprocess.SubprocessError):
+                return [], "Windows USB enumeration is unavailable; check Device Manager for a Nokia entry"
         for item in parsed[:64]:
             match = re.search(r"VID_([0-9A-Fa-f]{4})&PID_([0-9A-Fa-f]{4})", str(item.get("InstanceId")))
             if not match or match[1].upper() != NOKIA_VID.upper():
