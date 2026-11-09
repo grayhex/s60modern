@@ -11,6 +11,7 @@ import importlib.util
 import os
 import platform
 import sys
+import time
 from urllib.parse import urlsplit
 
 from . import VERSION
@@ -482,7 +483,8 @@ def routes(host: dict, com: dict[str, str], identified: int, dku2: str, *, gammu
 
 def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | None = None, origin: str | None = None,
              parts: list[dict] | None = None, dku2: str = "not-tried", *, gammu_error: str = "", pccs: dict | None = None,
-             preference: str = "auto", gammu_tried: bool = False, selection: dict | None = None) -> dict:
+             preference: str = "auto", gammu_tried: bool = False, selection: dict | None = None,
+             scan_at: float | None = None) -> dict:
     """The complete report. `host` is symport.bridge.discovery.host_candidates(); `relay` is OutboundRelay.public_state()."""
     usb = host.get("usb") or []
     problems = [row for row in usb if row.get("status") == "problem"]
@@ -555,6 +557,7 @@ def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | Non
         "selection": {job: selection.get(job) for job in route_model.JOBS},
         "dead_end": bool(selection.get("dead_end")),
         "gammu_error": gammu_error if gammu_error in route_model.GAMMU_CODES else "",
+        "scan_at": scan_at,
         "dku2": dku2.split(":")[0],
         "usb": [{k: row.get(k) for k in ("vid", "pid", "class", "status", "mi", "problem_code")} for row in usb],
         "com": [{"state": state} for state in com.values()],
@@ -565,6 +568,7 @@ def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | Non
             "action": list(link_action) if link_action else None,
             "pinned": bool(relay and relay.get("pinned")),
             "origin": origin if origin and link_code != "not-paired" else None,
+            "expires_in": relay.get("expires_in") if relay and link_code == "connected" else None,
         },
         "components": parts,
         "notes": [r for r in host.get("diagnostics", [])][:6],
@@ -634,13 +638,78 @@ def _component_row(part: dict, russian: bool) -> tuple[str, str]:
     return mark, f"{part['name']} — {state}"
 
 
+ROUTE_NAMES = {
+    "gammu": ("Gammu (PC Suite)", "Gammu (PC Suite)"),
+    "pccs": ("USB OBEX", "USB OBEX"),
+    "mtp": ("MTP (files)", "MTP (файлы)"),
+    "mass-storage": ("Mass storage", "Mass storage"),
+}
+JOB_NAMES = {"contacts": ("contacts", "контакты"), "calendar": ("calendar", "календарь"), "sms": ("SMS", "SMS"), "files": ("files", "файлы")}
+STATE_NAMES = {
+    "unavailable": ("not available", "недоступен"),
+    "busy": ("busy", "занят"),
+    "silent": ("found, the phone is silent", "найден, телефон молчит"),
+    "available": ("available", "доступен"),
+    "verified": ("verified", "проверен"),
+}
+# Route id -> the transport_preference that uses only that route (Mass storage has none: it serves files in `auto`).
+USE_VALUE = {"gammu": "gammu", "pccs": "pccs", "mtp": "mtp"}
+
+
+def jobs_text(selection: dict, russian: bool) -> str:
+    """“contacts and calendar (USB OBEX), files (Mass storage)” from a report's selection."""
+    pick = 1 if russian else 0
+    groups: dict[str, list[str]] = {}
+    for job in route_model.JOBS:
+        route = selection.get(job)
+        if route:
+            groups.setdefault(route, []).append(JOB_NAMES[job][pick])
+    joiner = " и " if russian else " and "
+
+    def names(jobs: list[str]) -> str:
+        return jobs[0] if len(jobs) == 1 else ", ".join(jobs[:-1]) + joiner + jobs[-1]
+
+    return ", ".join(f"{names(jobs)} ({ROUTE_NAMES[route][pick]})" for route, jobs in groups.items())
+
+
+def plain_sentence(report: dict, russian: bool) -> str:
+    """One plain-language sentence on top of the Connections window."""
+    selection = report.get("selection") or {}
+    states = {r["id"]: r.get("state") for r in report.get("routes", [])}
+    jobs = jobs_text(selection, russian)
+    if jobs:
+        return f"Телефон найден: {jobs}." if russian else f"Phone found: {jobs}."
+    if "busy" in states.values():
+        return ("Телефон найден, но канал занят другой программой (например, Nokia PC Suite). Закройте её и повторите поиск."
+                if russian else "The phone is there, but another program (for example Nokia PC Suite) holds the channel. Close it and search again.")
+    if "silent" in states.values() or report.get("usb"):
+        return ("Телефон найден, но не отвечает. Разблокируйте его, выберите режим PC Suite и повторите поиск."
+                if russian else "The phone is there but does not answer. Unlock it, choose PC Suite mode and search again.")
+    return ("Телефон по USB не найден. Проверьте кабель (не только для зарядки), разблокируйте телефон и повторите поиск."
+            if russian else "No phone found on USB. Check the cable (not charge-only), unlock the phone and search again.")
+
+
+def duration(seconds: int, russian: bool) -> str:
+    hours, rest = divmod(max(0, int(seconds)), 3600)
+    minutes = rest // 60
+    if russian:
+        return f"{hours} ч {minutes} мин" if hours else f"{minutes} мин"
+    return f"{hours} h {minutes} min" if hours else f"{minutes} min"
+
+
 def window_model(report: dict, russian: bool) -> dict:
-    """What the diagnostics window shows, as plain data (so it can be tested without a GUI)."""
+    """What the Connections window shows, as plain data (so it can be tested without a GUI)."""
     pick = 1 if russian else 0
     link = report["link"]
     phone = report["phone"]
+    selection = report.get("selection") or {}
+    serving = {route for route in selection.values() if route}
+    preference = report.get("preference", "auto")
+    left = link.get("expires_in")
+    scan_at = report.get("scan_at")
     return {
-        "title": ("SymPort Bridge — диагностика" if russian else "SymPort Bridge — diagnostics") + " " + report["bridge_version"],
+        "title": ("SymPort Bridge — подключения" if russian else "SymPort Bridge — connections") + " " + report["bridge_version"],
+        "sentence": plain_sentence(report, russian),
         "phone_mark": MARKS[phone["status"]],
         "phone_summary": phone["summary"][pick],
         "phone_action": phone["action"][pick] if phone["action"] else "",
@@ -649,6 +718,26 @@ def window_model(report: dict, russian: bool) -> dict:
         + ((" (сертификат закреплён)" if russian else " (certificate pinned)") if link["code"] == "connected" and link["pinned"] else ""),
         "link_action": link["action"][pick] if link["action"] else "",
         "link_origin": link.get("origin"),
+        "link_connected": link["code"] == "connected",
+        "lease": (("Доступ SymPort: осталось " if russian else "SymPort access: ") + duration(left, russian) + ("" if russian else " left"))
+        if isinstance(left, int)
+        else "",
+        "scan": (time.strftime("%H:%M:%S", time.localtime(scan_at)) if isinstance(scan_at, (int, float)) else ""),
+        "preference": preference,
+        "route_rows": [
+            {
+                "id": r["id"],
+                "mark": MARKS[r["status"]],
+                "name": ROUTE_NAMES[r["id"]][pick],
+                "state": STATE_NAMES.get(r.get("state"), ("?", "?"))[pick],
+                "detail": r["summary"][pick],
+                "used": r["id"] in serving,
+                "use": USE_VALUE.get(r["id"]),
+                "chosen": USE_VALUE.get(r["id"]) == preference,
+                "usable": r.get("state") in route_model.USABLE,
+            }
+            for r in report.get("routes", [])
+        ],
         "rows": [(MARKS[r["status"]], r["summary"][pick]) for r in report.get("routes", [])]
         + [("", "")]
         + [(MARKS[c["status"]], c["summary"][pick]) for c in report["checks"]]

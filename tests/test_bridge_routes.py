@@ -338,50 +338,16 @@ def test_settings_file_round_trip_keeps_the_preference(tmp_path):
 
 # ---- the settings window (Tk is stubbed; logic and save path are real) -----------------------------------------------
 def run_settings(tmp_path, monkeypatch, pick=None):
-    import sys
-    import types
-    from unittest import mock
-
     from symport.bridge import tray
+    from tests.tk_stub import Tk
 
-    class Var:
-        def __init__(self, value=None):
-            self.value = value
-
-        def get(self):
-            return self.value
-
-        def set(self, value):
-            self.value = value
-
-    created, variables = {}, {}
-    tk = types.ModuleType("tkinter")
-    ttk = types.ModuleType("tkinter.ttk")
-    root = mock.MagicMock(name="root")
-    tk.Tk = lambda: root
-    tk.BooleanVar = tk.StringVar = lambda value=None: variables.setdefault(len(variables), Var(value))
-    tk.filedialog, tk.messagebox = mock.MagicMock(), mock.MagicMock()
-
-    def button(parent, text="", command=None, **kw):
-        created[text] = command
-        return mock.MagicMock()
-
-    def combobox(parent, textvariable=None, values=(), **kw):
-        created["combobox"] = (textvariable, list(values))
-        return mock.MagicMock()
-
-    widget = lambda *a, **k: mock.MagicMock()  # noqa: E731
-    ttk.Button, ttk.Combobox = button, combobox
-    ttk.Frame = ttk.Label = ttk.Entry = ttk.Checkbutton = widget
-    tk.ttk = ttk
-    monkeypatch.setitem(sys.modules, "tkinter", tk)
-    monkeypatch.setitem(sys.modules, "tkinter.ttk", ttk)
-    monkeypatch.setitem(sys.modules, "tkinter.filedialog", tk.filedialog)
-    monkeypatch.setitem(sys.modules, "tkinter.messagebox", tk.messagebox)
+    stub = Tk(monkeypatch)
     monkeypatch.setattr(tray, "autostart", lambda enabled=None: False)
+    monkeypatch.setattr("symport.bridge.doctor.windows_language_is_russian", lambda: False)
     if pick:
-        root.mainloop.side_effect = lambda: (created["combobox"][0].set(pick), created["OK"]())
-    return tray.settings_window(tmp_path, 24652), created
+        stub.root.mainloop.side_effect = lambda: (stub.combobox[0].set(pick), stub.button("OK")())
+    result = tray.settings_window(tmp_path, 24652)
+    return result, {"combobox": stub.combobox}
 
 
 def test_settings_window_offers_the_four_preferences_and_saves_the_chosen_one(tmp_path, monkeypatch):

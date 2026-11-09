@@ -175,30 +175,14 @@ def test_com_port_is_not_probed_while_the_phone_is_identified(agent, monkeypatch
 # ---- the diagnostics window: Tk is stubbed (it is not available here); the logic and the close paths are real --------
 
 def run_window(tmp_path, monkeypatch, report=None):
-    bound, created, protocols = {}, {}, []
-    tk = types.ModuleType("tkinter")
-    ttk = types.ModuleType("tkinter.ttk")
-    root = mock.MagicMock(name="root")
-    root.bind.side_effect = lambda key, fn: bound.__setitem__(key, fn)
-    root.protocol.side_effect = lambda name, fn: protocols.append((name, fn))
-    tk.Tk = lambda: root
-    widget = lambda *a, **k: mock.MagicMock()  # noqa: E731
-    tk.Text = widget
-    tk.messagebox = mock.MagicMock()
+    from tests.tk_stub import Tk
 
-    def button(parent, text="", command=None, **kw):
-        created[text] = command
-        return mock.MagicMock()
-
-    ttk.Button, ttk.Frame, ttk.Label = button, widget, widget
-    tk.ttk = ttk
-    monkeypatch.setitem(sys.modules, "tkinter", tk)
-    monkeypatch.setitem(sys.modules, "tkinter.ttk", ttk)
-    monkeypatch.setitem(sys.modules, "tkinter.messagebox", tk.messagebox)
+    stub = Tk(monkeypatch)
     if report is not None:
         (tmp_path / "diagnostics.json").write_text(json.dumps(report), encoding="utf-8")
     assert tray.diagnostics_window(tmp_path, 24652) == tray.SETTINGS_CLOSED
-    return root, bound, created, protocols, tk
+    created = {text: command for text, command, _ in stub.buttons}
+    return stub.root, stub.bound, created, stub.protocols, stub
 
 
 def test_diagnostics_window_closes_with_ok_escape_enter_and_x(tmp_path, monkeypatch):
@@ -354,7 +338,6 @@ def test_a_port_that_opens_but_does_not_answer_is_com_silent_not_just_free():
 
 
 def test_com_state_reports_silent_only_for_a_port_that_opens(monkeypatch):
-    import sys
     import types
 
     class Port:
@@ -514,7 +497,6 @@ def test_com_probing_skips_the_java_port_and_is_throttled(agent, monkeypatch):
 
 def test_a_windows_11_mtp_phone_without_a_wpd_usb_row_is_still_recognised(monkeypatch):
     """E72: the portable device sits under USB\\MS_COMP_MTP; the Nokia USB rows carry class 'USB', not 'WPD'."""
-    import types
 
     from symport.bridge import discovery
 

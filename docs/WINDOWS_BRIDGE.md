@@ -87,10 +87,18 @@ Uninstall via *Settings → Apps* (asks whether to delete settings and the pairi
 
 ## Tray and configuration
 
-Tray **Settings**: automatic Nokia USB discovery (default on), optional current-user
-Windows sign-in autostart (default off), Gammu configuration and connection-profile
-JSON. **Diagnostics** opens the *Driver & Connection Doctor* (below). Operation logs contain action,
-time and status only. Settings/private backups live in `%LOCALAPPDATA%\SymPortBridge`.
+Tray **Settings** (grouped: *Connection*, *Updates*, *Start-up*): automatic Nokia USB discovery (default on), the route to the
+phone (`transport_preference`: automatic / Gammu / USB OBEX / MTP), notifications (default on), the daily update check,
+optional current-user Windows sign-in autostart (default off), Gammu configuration and connection-profile JSON.
+**Connections** (the default tray action, also “Diagnostics”) opens the *Driver & Connection Doctor* (below). Operation logs
+contain action, time and status only. Settings/private backups live in `%LOCALAPPDATA%\SymPortBridge`.
+
+**Tray icon.** A small dot shows the state: grey = no phone, amber = a phone is found but silent or its channel is busy, green =
+at least one route works, red = the SymPort link has an error (it wins over the phone state). The tooltip reads like
+“Nokia E72 · contacts and calendar (USB OBEX) · SymPort connected”. Toasts announce connect, disconnect, a route change, the
+SymPort link coming and going and — once, ten minutes before the end — the end of the SymPort access. The first report after
+start only sets the baseline; toasts can be switched off in Settings. Nothing about them is stored.
+
 Full-volume backup jobs in the development tools still operate on volumes enrolled
 on the server. For Bridge use the existing selected-folder backup and PIM backups;
 Mass Storage never provides SMS or phonebook access.
@@ -141,6 +149,23 @@ Buttons: **Rescan** (asks the running Bridge to look again at once), **Copy diag
 **Pair / Help** (opens only the SymPort address this Bridge was paired with, or explains the steps; the Bridge never
 connects to a server on its own) and **Close**. New Nokia USB devices are noticed within about 10 seconds without pressing
 Rescan. A Windows PnP record alone is never shown as “Connected”.
+
+**Connections window.** One plain sentence on top (“Phone found: contacts and calendar (USB OBEX).” / “The phone is there but does
+not answer…”), then the routes with their state and a **Use** button each (it stores `transport_preference` in `settings.json`;
+the Bridge applies it within a few seconds, never under a running operation) and **Automatic (recommended)**, then the SymPort
+link with the **remaining access time** and **Reconnect to SymPort** (opens only the address this Bridge was paired with, like
+*Pair / Help*), the last search time with a progress bar for **Rescan**, **Copy diagnostics**, **Save report…** (the same text as a
+`.txt` file, by default on the desktop; no personal data) and **Open log folder**. The access lasts two hours and lives in
+memory only: after the Bridge restarts nothing is restored and SymPort has to be asked again.
+
+**Hotplug.** A hidden top-level window receives `WM_DEVICECHANGE` and wakes the Bridge, which re-reads the USB list at once. The
+10-second USB poll stays as the fallback. The AT back-off for a silent phone starts over only when the *set* of Nokia USB devices
+changed, so a burst of unrelated device messages does not make the Bridge hammer a silent modem port.
+
+**Less PowerShell.** The Nokia USB list and the paired-Bluetooth list are read through SetupAPI/CfgMgr32 (ctypes); PowerShell
+remains as the fallback if that fails, for the memory-card association (CIM) and for the Portable Device (MTP) shell access.
+Every helper process the Bridge starts (PowerShell, the settings and Connections windows) is tracked and ended when the Bridge
+closes; closing also cancels a running USB OBEX read, which sends *CloseStore* and *Disconnect* first.
 
 The USB list shows each Nokia node's class (e.g. `WPD`, `Ports`, `Modem`), the composite-interface number and Device Manager's error code (28 = no driver installed). The copied text contains versions, VID:PID, statuses and counts only — no IMEI, USB serial numbers or PnP instance IDs,
 paths, addresses (the SymPort URL is reduced to its scheme), keys, tokens, contacts or SMS.
