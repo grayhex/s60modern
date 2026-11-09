@@ -34,14 +34,52 @@ LIMIT = 64 * 1024 * 1024
 SOURCE = "windows-portable-device"
 MTP_ONLY = "Windows Portable Devices (MTP) expose files only; they say nothing about contacts, calendar or SMS"
 
-PRELUDE = r"""
+# How a Shell item is recognised as a Nokia phone. The patterns are shared by the script and the tests (one source).
+# 1. Older Windows: the vendor id is in the Shell path (`...\\?\usb#vid_0421&pid_xxxx#...`).
+# 2. Windows 11 MTP: the path is `...\\?\usb#ms_comp_mtp#<id>#{...}` (no VID); the item counts only when the PnP device
+#    `USB\MS_COMP_MTP\<ID>` has a Nokia USB device (`USB\VID_0421&PID_xxxx...`) as its parent. Never by name, never by
+#    `ms_comp_mtp` alone: another vendor's MTP device must not be offered.
+PATH_VID = r"(?i)vid_0421"
+PATH_MS_COMP_MTP = r"(?i)usb#ms_comp_mtp#([^#]+)#"
+NOKIA_PARENT = r"(?i)^USB\\VID_0421&PID_[0-9A-F]{4}([\\&]|$)"
+
+
+def ms_comp_mtp_instance(path: str) -> str | None:
+    """PnP instance id (`USB\\MS_COMP_MTP\\<ID>`) behind a Shell path of an MTP composite device, else None."""
+    found = re.search(PATH_MS_COMP_MTP, str(path))
+    return "USB\\MS_COMP_MTP\\" + found[1].upper() if found else None
+
+
+def is_nokia_parent(instance: object) -> bool:
+    """True for the instance id of a Nokia USB device (also a composite interface of one)."""
+    return bool(re.search(NOKIA_PARENT, str(instance or "")))
+
+
+PRELUDE = (r"""
 $ErrorActionPreference = 'Stop'
 $req = $env:SYMPORT_WPD_INPUT | ConvertFrom-Json
 $shell = New-Object -ComObject Shell.Application
 $computer = $shell.NameSpace(17)
+function Test-Nokia($item) {
+  $path = [string]$item.Path
+  if ($path -match '@@VID@@') { return $true }
+  if ($path -match '@@MTP@@') {
+    $wanted = 'USB\MS_COMP_MTP\' + $Matches[1]
+    try {
+      $device = Get-PnpDevice -InstanceId $wanted -ErrorAction SilentlyContinue | Select-Object -First 1
+      if (-not $device) {
+        $device = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
+          Where-Object { $_.InstanceId -ieq $wanted } | Select-Object -First 1
+      }
+      if (-not $device) { return $false }
+      $parent = [string](Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName 'DEVPKEY_Device_Parent' -ErrorAction Stop).Data
+      return [bool]($parent -match '@@PARENT@@')
+    } catch { return $false }   # parent unknown: the device is not offered
+  }
+  return $false
+}
 function Get-Devices {
-  @($computer.Items() | Where-Object { $_.IsFolder -and (([string]$_.Path) -match '(?i)vid_0421') } |
-    Sort-Object { [string]$_.Path })
+  @($computer.Items() | Where-Object { $_.IsFolder -and (Test-Nokia $_) } | Sort-Object { [string]$_.Path })
 }
 function Find-Child($folder, [string]$name) {
   $folder.Items() | Where-Object { $_.Name -ceq $name } | Select-Object -First 1
@@ -55,7 +93,7 @@ function Enter-Path($device, $parts) {
   }
   $cur
 }
-"""
+""").replace("@@VID@@", PATH_VID).replace("@@MTP@@", PATH_MS_COMP_MTP).replace("@@PARENT@@", NOKIA_PARENT)
 
 PROBE = PRELUDE + r"""
 $out = @(); $index = 0

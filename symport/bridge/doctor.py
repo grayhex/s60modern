@@ -111,18 +111,20 @@ PHONE: dict[str, tuple[str, Text, Text | None]] = {
     "mtp-only": (
         WARN,
         (
-            "Windows sees the phone as a media device (MTP / “Portable device”): no COM port and no drive letter.",
-            "Windows видит телефон как медиа-устройство (MTP / «Переносное устройство»): COM-порта и буквы диска нет.",
+            "Windows sees the phone as a media device (MTP / “Portable device”), but no storage can be read yet; no COM port, no drive letter.",
+            "Windows видит телефон как медиа-устройство (MTP / «Переносное устройство»), но хранилище пока не читается; COM-порта и буквы диска нет.",
         ),
         (
-            "SymPort cannot read an MTP phone yet. For files choose “Mass storage” on the phone: the memory card then gets a "
-            "drive letter. For contacts, calendar and SMS the Nokia PC Suite / Nokia Connectivity Cable driver has to provide a "
-            "COM port: install it yourself (from Nokia/Microsoft), choose “PC Suite” and replug the cable. If the phone says "
-            "“PC Suite” but Windows shows only a portable device, that driver is most likely missing.",
-            "SymPort пока не читает телефон по MTP. Для файлов выберите на телефоне «Mass storage»: карта памяти получит букву "
-            "диска. Для контактов, календаря и SMS COM-порт должен дать драйвер Nokia PC Suite / Nokia Connectivity Cable: "
-            "установите его сами (у Nokia/Microsoft), выберите «PC Suite» и переподключите кабель. Если на телефоне выбран "
-            "«PC Suite», а Windows показывает только переносное устройство, скорее всего этого драйвера нет.",
+            "Unlock the phone and press “Rescan”: a locked phone or the wrong USB mode shows no storage. For files choose “Mass "
+            "storage” on the phone (the memory card then gets a drive letter). For contacts, calendar and SMS the Nokia PC Suite / "
+            "Nokia Connectivity Cable driver has to provide a COM port: install it yourself (from Nokia/Microsoft), choose "
+            "“PC Suite” and replug the cable. If the phone says “PC Suite” but Windows shows only a portable device, that driver "
+            "is most likely missing.",
+            "Разблокируйте телефон и нажмите «Повторить поиск»: у заблокированного телефона или при неверном режиме USB хранилища "
+            "нет. Для файлов выберите на телефоне «Mass storage» (карта получит букву диска). Для контактов, календаря и SMS "
+            "COM-порт должен дать драйвер Nokia PC Suite / Nokia Connectivity Cable: установите его сами (у Nokia/Microsoft), "
+            "выберите «PC Suite» и переподключите кабель. Если на телефоне выбран «PC Suite», а Windows показывает только "
+            "переносное устройство, скорее всего этого драйвера нет.",
         ),
     ),
     "no-com": (
@@ -324,6 +326,10 @@ def classify_phone(host: dict, com: dict[str, str], identified: int) -> str:
         return "usb-driver-problem"
     if any(p.get("storages") for p in host.get("portable") or []):
         return "mtp-files"
+    # A Nokia Portable Device without readable storage: Windows 11 lists it under USB\MS_COMP_MTP and may show no WPD-class USB
+    # row, so the portable-device record counts too (locked phone or wrong mode: connected, nothing to read yet).
+    if host.get("portable"):
+        return "mtp-only"
     if usb and any(str(row.get("class")).upper() == "WPD" for row in usb) and not any(
         str(row.get("class")).lower() in ("ports", "modem") for row in usb
     ):
