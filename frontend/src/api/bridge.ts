@@ -56,9 +56,16 @@ export async function probeBridge(origin: string): Promise<ProbeResult> {
 }
 
 /** Opens the approval dialog on the PC. The lease token is created by SymPort, not the browser. */
-export async function pairBridge(origin: string, token: string): Promise<PairResult> {
+export async function pairBridge(
+  origin: string,
+  token: string,
+  caSha256?: string,
+): Promise<PairResult> {
   try {
-    const { status, data } = await post({ origin, token }, 90000);
+    const { status, data } = await post(
+      { origin, token, ...(caSha256 ? { ca_sha256: caSha256 } : {}) },
+      90000,
+    );
     if (status === 200 && data.paired === true) return { kind: 'ok', version: text(data.version) };
     if (status === 403) return { kind: 'declined' };
     if (status === 429) return { kind: 'wait' };
@@ -68,5 +75,37 @@ export async function pairBridge(origin: string, token: string): Promise<PairRes
     return error instanceof DOMException && error.name === 'TimeoutError'
       ? { kind: 'timeout' }
       : { kind: 'unreachable' };
+  }
+}
+
+/** What a paired Bridge reports about its own link to SymPort (no URLs, no secrets). */
+export type RelayState = { state: 'connecting' | 'connected' | 'error'; reason: string | null };
+
+export async function bridgeRelayState(origin: string): Promise<RelayState | null> {
+  try {
+    const { status, data } = await post({ origin, relay_status: true }, 5000);
+    const relay = parse(data.relay);
+    const state = text(relay.state);
+    if (status !== 200 || (state !== 'connecting' && state !== 'connected' && state !== 'error'))
+      return null;
+    return { state, reason: text(relay.reason) };
+  } catch {
+    return null;
+  }
+}
+
+/** SHA-256 of SymPort's own CA (Home LAN HTTPS), so the Bridge can pin it instead of using the Windows store. */
+export async function localCaFingerprint(): Promise<string | undefined> {
+  try {
+    const response = await fetch('/api/auth/session', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
+    const data = parse(await response.json());
+    return typeof data.ca_sha256 === 'string' && /^[0-9a-f]{64}$/.test(data.ca_sha256)
+      ? data.ca_sha256
+      : undefined;
+  } catch {
+    return undefined;
   }
 }

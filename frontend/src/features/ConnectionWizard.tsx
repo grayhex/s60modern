@@ -3,7 +3,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleCheck, CircleDashed, CircleX, Ban, Loader, Minus } from 'lucide-react';
 import { useApi, usePreferences } from '../state/app';
 import { keys, useDevices } from '../api/queries';
-import { pairBridge, probeBridge, type PairResult, type ProbeResult } from '../api/bridge';
+import {
+  bridgeRelayState,
+  localCaFingerprint,
+  pairBridge,
+  probeBridge,
+  type PairResult,
+  type ProbeResult,
+  type RelayState,
+} from '../api/bridge';
 import CapabilityMatrix from '../components/CapabilityMatrix';
 import { Card, ErrorMessage } from '../components/ui';
 import { Download } from '../components/workspace';
@@ -59,6 +67,7 @@ export default function ConnectionWizard() {
   const [pairedAt, setPairedAt] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const [identified, setIdentified] = useState(false);
+  const [bridgeRelay, setBridgeRelay] = useState<RelayState | null>(null);
 
   const status = useQuery({
     queryKey: ['connection'],
@@ -88,7 +97,11 @@ export default function ConnectionWizard() {
     mutationFn: async () => {
       const lease = await api.connection('enable');
       if (!lease.relay_token) throw Error('Missing bridge lease');
-      const result = await pairBridge(location.origin, lease.relay_token);
+      const result = await pairBridge(
+        location.origin,
+        lease.relay_token,
+        await localCaFingerprint(),
+      );
       // A refused or failed pairing must not leave an unclaimed lease behind.
       if (result.kind !== 'ok') await api.connection('disconnect');
       return result;
@@ -138,6 +151,23 @@ export default function ConnectionWizard() {
     const timer = setTimeout(() => setNow(Date.now()), 26000 - (now - pairedAt));
     return () => clearTimeout(timer);
   }, [grace, now, pairedAt]);
+  // After pairing, ask the Bridge itself why it is not connected yet (untrusted certificate, firewall, …).
+  const relayUp = status.data?.mode === 'windows-bridge' && status.data.connected;
+  const pairedOk = pair?.kind === 'ok';
+  useEffect(() => {
+    if (!pairedOk || relayUp) return;
+    let stopped = false;
+    const ask = async () => {
+      const state = await bridgeRelayState(location.origin);
+      if (!stopped) setBridgeRelay(state);
+    };
+    void ask();
+    const timer = setInterval(() => void ask(), 3000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [pairedOk, relayUp]);
   const hostValue: HostInfo | 'loading' | 'error' | null = !reachable
     ? null
     : host.isPending
@@ -157,6 +187,7 @@ export default function ConnectionWizard() {
     selectedId: device,
     lostIdentity: identified && !identifiedNow,
     grace,
+    bridgeRelay: pairedOk && !relayUp ? bridgeRelay : null,
     t,
   };
   const steps = computeSteps(input);

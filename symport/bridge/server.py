@@ -26,6 +26,7 @@ class BridgeServer(ThreadingHTTPServer):
         self.manager, self.key, self.origins = manager, key, set(origins)
         self.approve = approve
         self.pair = None
+        self.relay_state = None  # callable(origin) -> {"state", "reason"} | None, set by the Agent
         self.pair_lock = threading.Lock()
         self.last_pair = 0.0
         self.requests = threading.BoundedSemaphore(8)
@@ -172,10 +173,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(
                     {"probe": True, "version": VERSION, "pair_available": bool(self.server.pair)}
                 )
+            if isinstance(data, dict) and data.get("relay_status") is True and data.get("origin") == origin:
+                # Lets the wizard explain why a paired Bridge is not connected yet (e.g. untrusted certificate).
+                state = self.server.relay_state(origin) if self.server.relay_state else None
+                return self.reply({"relay": state})
             if (
                 not isinstance(data, dict)
                 or data.get("origin") != origin
                 or not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", str(data.get("token", "")))
+                or not re.fullmatch(r"[0-9a-f]{64}", str(data.get("ca_sha256", "0" * 64)))
             ):
                 raise ValueError("Invalid pairing")
             if not self.server.pair or not self.server.pair_lock.acquire(blocking=False):
@@ -184,7 +190,8 @@ class Handler(BaseHTTPRequestHandler):
                 if time.monotonic() - self.server.last_pair < 15:
                     return self.reply({"error": "Wait before requesting access again"}, 429)
                 self.server.last_pair = time.monotonic()
-                if not self.server.pair(origin, data["token"]):
+                extra = (data["ca_sha256"],) if data.get("ca_sha256") else ()
+                if not self.server.pair(origin, data["token"], *extra):
                     return self.reply({"error": "Access was declined on the PC"}, 403)
                 return self.reply({"paired": True, "version": VERSION})
             finally:

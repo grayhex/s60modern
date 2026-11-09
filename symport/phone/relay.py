@@ -22,6 +22,7 @@ class BrowserBridgeRelay:
         self.claimed = False
         self.closed = False
         self.connections = []
+        self.polled = False
 
     def authorized(self, token):
         return (
@@ -50,8 +51,11 @@ class BrowserBridgeRelay:
     def poll(self):
         with self.condition:
             self.last_seen = time.monotonic()
+            # The first poll answers at once: the Bridge (and the wizard) learn immediately that the link works,
+            # instead of after a full 20 s long-poll. Later polls wait for work as before.
+            first, self.polled = not self.polled, True
             self.condition.wait_for(
-                lambda: self.closed or (self.pending and not self.claimed), timeout=20
+                lambda: self.closed or (self.pending and not self.claimed), timeout=0 if first else 20
             )
             if self.closed:
                 raise ValueError("Bridge access was revoked")

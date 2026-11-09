@@ -61,8 +61,8 @@ def stack(tmp_path, monkeypatch):
     server.tls_context = tls.server_context(material)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
-    # --- The Windows Bridge on "the PC" trusts that CA, the way installing it into Windows does.
-    monkeypatch.setenv("SSL_CERT_FILE", str(material.ca_file))
+    # --- The Windows Bridge on "the PC" does NOT have the CA in its certificate store: it must pin it at pairing.
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
     phone = tmp_path / "phone"
     (phone / "Images").mkdir(parents=True)
     (phone / "Images" / "IMG_0001.jpg").write_bytes(b"\xff\xd8\xff\xd9")
@@ -118,8 +118,11 @@ def test_browser_to_bridge_to_phone_over_https(stack):
     assert status == 200 and lease["relay_token"]
 
     # 3. Pair: the Bridge asks the PC operator (approved here) and starts calling back over verified TLS.
-    status, paired = bridge_post(agent, origin, {"origin": origin, "token": lease["relay_token"]})
+    status, info, _ = https(ip, port, context, "GET", "/api/auth/session", headers={"Cookie": headers["Cookie"]})
+    fingerprint = info["ca_sha256"]
+    status, paired = bridge_post(agent, origin, {"origin": origin, "token": lease["relay_token"], "ca_sha256": fingerprint})
     assert status == 200 and paired["paired"] is True
+    assert (agent.root / "trusted-ca" / (fingerprint + ".pem")).is_file(), "the approved CA is pinned for the relay"
 
     # 4. Through SymPort the phone volume is visible and its files can be listed.
     deadline = time.monotonic() + 30
@@ -141,3 +144,40 @@ def test_browser_to_bridge_to_phone_over_https(stack):
     # 6. Revoking the web access on the PC stops the relay.
     agent.revoke()
     assert agent.relay is None
+
+
+def test_untrusted_certificate_is_reported_and_pinning_fixes_it(stack):
+    ip, port, agent, state, context = stack
+    origin = f"https://{ip}:{port}"
+    status, session, cookies = https(ip, port, context, "POST", "/api/auth/login", {"password": PASSWORD}, {"Origin": origin})
+    headers = {"Origin": origin, "Cookie": "; ".join(cookies), "X-Symport-Token": session["csrf"]}
+    lease = https(ip, port, context, "POST", "/api/connection", {"action": "enable"}, headers)[1]
+
+    # A wrong fingerprint is refused: the Bridge never trusts a certificate the page did not announce.
+    assert bridge_post(agent, origin, {"origin": origin, "token": lease["relay_token"], "ca_sha256": "0" * 64})[0] == 400
+    agent.server.last_pair = 0
+
+    # Without pinning the Bridge cannot verify the NAS certificate and says exactly that.
+    assert bridge_post(agent, origin, {"origin": origin, "token": lease["relay_token"]})[0] == 200
+    deadline = time.monotonic() + 20
+    report = None
+    while time.monotonic() < deadline:
+        report = bridge_post(agent, origin, {"origin": origin, "relay_status": True})[1]["relay"]
+        if report and report["state"] == "error":
+            break
+        time.sleep(0.3)
+    assert report == {"state": "error", "reason": "tls-untrusted"}
+    assert bridge_post(agent, "https://other.example", {"origin": "https://other.example", "relay_status": True})[1]["relay"] is None
+
+    # Pairing again with the announced fingerprint connects.
+    agent.server.last_pair = 0
+    fingerprint = https(ip, port, context, "GET", "/api/auth/session", headers={"Cookie": headers["Cookie"]})[1]["ca_sha256"]
+    lease = https(ip, port, context, "POST", "/api/connection", {"action": "enable"}, headers)[1]
+    assert bridge_post(agent, origin, {"origin": origin, "token": lease["relay_token"], "ca_sha256": fingerprint})[0] == 200
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        report = bridge_post(agent, origin, {"origin": origin, "relay_status": True})[1]["relay"]
+        if report and report["state"] == "connected":
+            break
+        time.sleep(0.3)
+    assert report == {"state": "connected", "reason": None}

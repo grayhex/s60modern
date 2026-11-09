@@ -55,8 +55,60 @@ export type WizardInput = {
   lostIdentity: boolean;
   /** Pairing just succeeded; the relay needs a few seconds for its first heartbeat. */
   grace?: boolean;
+  /** The paired Bridge's own report about its link to SymPort. */
+  bridgeRelay?: { state: string; reason: string | null } | null;
   t: Translate;
 };
+
+/** Why a paired Bridge cannot reach SymPort, as reported by the Bridge itself. */
+function relayFailure(reason: string | null, title: [string, string], make: Maker): Step {
+  const fixes: Record<string, [string, string][]> = {
+    'tls-untrusted': [
+      [
+        "The PC does not trust the SymPort certificate. Request access again: the Bridge pins SymPort's own certificate when you approve it (SymPort 0.10+ with Home LAN HTTPS).",
+        'ПК не доверяет сертификату SymPort. Запросите доступ ещё раз: Bridge запоминает собственный сертификат SymPort при подтверждении (SymPort 0.10+ с HTTPS Home LAN).',
+      ],
+      [
+        'Or install the certificate from the SymPort login page into Trusted Root Certification Authorities (Current User) and restart Bridge.',
+        'Либо установите сертификат со страницы входа SymPort в «Доверенные корневые центры сертификации» (текущий пользователь) и перезапустите Bridge.',
+      ],
+    ],
+    'tls-error': [
+      [
+        'The secure connection to SymPort failed. Open SymPort with https:// and update Bridge to 0.3.4 or newer.',
+        'Не удалось установить защищённое соединение с SymPort. Откройте SymPort по https:// и обновите Bridge до 0.3.4 или новее.',
+      ],
+    ],
+    unreachable: [
+      [
+        'The PC cannot reach SymPort at this address and port. Check the network, the NAS address and the Windows firewall.',
+        'ПК не может подключиться к SymPort по этому адресу и порту. Проверьте сеть, адрес NAS и брандмауэр Windows.',
+      ],
+    ],
+    rejected: [
+      [
+        'SymPort refused the access lease. Request access again.',
+        'SymPort отклонил выданный доступ. Запросите доступ ещё раз.',
+      ],
+    ],
+  };
+  return make(
+    'pairing',
+    title,
+    'failed',
+    [
+      'Approved, but the Bridge cannot connect to SymPort.',
+      'Доступ разрешён, но Bridge не может подключиться к SymPort.',
+    ],
+    `relay-${reason ?? 'error'}`,
+    fixes[reason ?? ''] ?? [
+      [
+        'Open Bridge → Diagnostics in the tray for details.',
+        'Откройте в трее Bridge → Diagnostics.',
+      ],
+    ],
+  );
+}
 
 const isLocal = (hostname: string) => ['localhost', '127.0.0.1', '[::1]', '::1'].includes(hostname);
 export const originProblem = (o: WizardInput['origin']) =>
@@ -176,8 +228,8 @@ export function computeSteps(input: WizardInput): Step[] {
             'Откройте SymPort по HTTPS: режим Home LAN отдаёт его так по умолчанию (https://<IP-NAS>:8765, SYMPORT_TLS не равен off), либо через доверенный обратный прокси с SYMPORT_PUBLIC_ORIGIN, либо с localhost / через SSH-туннель. Bridge принимает HTTP только для localhost.',
           ],
           [
-            'On a new computer install the SymPort certificate once (link on the login page): double-click it → Install Certificate → Current User → Trusted Root Certification Authorities. The browser and the Windows Bridge then trust the address.',
-            'На новом компьютере один раз установите сертификат SymPort (ссылка на экране входа): двойной щелчок → «Установить сертификат» → «Текущий пользователь» → «Доверенные корневые центры сертификации». После этого браузер и Windows Bridge доверяют адресу.',
+            'On a new computer install the SymPort certificate once (link on the login page): double-click it → Install Certificate → Current User → Trusted Root Certification Authorities. The browser then trusts the address (the Windows Bridge pins it itself when you approve the pairing).',
+            'На новом компьютере один раз установите сертификат SymPort (ссылка на экране входа): двойной щелчок → «Установить сертификат» → «Текущий пользователь» → «Доверенные корневые центры сертификации». После этого браузер доверяет адресу (Windows Bridge запоминает сертификат сам при подтверждении сопряжения).',
           ],
         ],
       ),
@@ -274,6 +326,8 @@ export function computeSteps(input: WizardInput): Step[] {
         'Подтвердите этот адрес SymPort в окне Bridge на ПК (90 с).',
       ]),
     );
+  else if (input.pair?.kind === 'ok' && input.bridgeRelay?.state === 'error')
+    steps.push(relayFailure(input.bridgeRelay.reason, pairTitle, make));
   else if (input.pair?.kind === 'ok' && input.grace)
     steps.push(
       make('pairing', pairTitle, 'loading', [
