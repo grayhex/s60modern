@@ -38,7 +38,20 @@ class LocalTransports:
             # A Nokia that Windows shows as a Portable Device (MTP): read-only file access, no PIM, never a phone identity.
             self.wpd = WpdAdapter()
             self.adapters[self.wpd.id] = self.wpd
+        if os.name == "nt" and os.getenv("SYMPORT_PCCS", "1") != "0":
+            # Nokia PCCS over the USB OBEX interface: read-only contacts and calendar, no COM port and no Gammu.
+            from .pccs_adapter import PccsAdapter
+
+            self.pccs = PccsAdapter()
+            self.adapters[self.pccs.id] = self.pccs
         self.last_connections = []
+
+    def close(self) -> None:
+        """Bridge shutdown: let every adapter that keeps a phone store or interface open release it."""
+        for adapter in self.adapters.values():
+            closer = getattr(adapter, "close", None)
+            if callable(closer):
+                closer()
 
     @property
     def personal(self):
@@ -74,6 +87,7 @@ class LocalTransports:
                             "firmware",
                             "evidence",
                             "configured_target",
+                            "route_state",
                         )
                     }
                 )

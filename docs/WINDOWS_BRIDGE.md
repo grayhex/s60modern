@@ -190,6 +190,32 @@ connections that find the device through the Nokia driver). It is repeated only 
 Rescan; a silent phone just records “no response”. Whether a given phone answers this way with the installed driver is not
 guaranteed and not verified for the E72/Windows 11 combination.
 
+**USB OBEX route (Nokia PCCS) — contacts and calendar without COM or Gammu.** The Nokia USB driver (`nmwcd`) exposes three
+interfaces per phone; the one with interface class `{4F919100-4ADF-11D5-882D-00B0D02FE381}` speaks OBEX, and PC Suite talks to
+the phone's sync engine through it. The Bridge enumerates that class with SetupAPI (ctypes), opens the interface with
+`CreateFile`, finds the one of the (usually three) interfaces that answers an OBEX *Connect* with the Folder Browsing target
+`F9EC7BC4-953C-11D2-984E-525400DC9E09`, and reads the phone book and the calendar with the sequence OpenStore → ResetChangeInfo →
+GetStoreFormat → SetRemoteStoreFormat → ListChanges → ReadItems → CloseStore. The Phonet (`…9102`) and LCIF (`…910C`) interfaces
+are never opened. The channel is opened per operation and closed at once; `CloseStore` and *Disconnect* are sent also after a
+failure and when the Bridge is closed.
+
+* **Read-only.** `CommitChanges`, `CreateItems`, `DeleteItems` and any other write are not implemented. The only PUT is
+  *SetRemoteStoreFormat* (the format the PC wants to receive); it changes no stored record. Files, SMS, tasks, telemetry and
+  identity are *unsupported* on this route with a stated reason.
+* **`contacts.read` / `calendar.read` become `available` only after the phone answered a real Connect + OpenStore** (a probe that
+  also sends ResetChangeInfo and CloseStore and reads no record); the presence of the interface proves nothing. The route
+  is `verified` after the first complete read in this session.
+* **Name of the connection.** The optional OBEX capability object gives Manufacturer, Model and software version, so the
+  connection can be called “Nokia E72”; without it it is “Nokia (USB OBEX)”. The IMEI/`<SN>` field of that object is never
+  read, copied, logged or shown.
+* **Busy channel.** If Nokia PC Suite (or Nokia Suite) holds the channel, `CreateFile` is refused (error 5/32) and the route is
+  `busy`: “close Nokia PC Suite”. Right after PC Suite was closed the first *Connect* can fail; a read retries up to three
+  times with a pause of a few seconds.
+* **Not verified:** only one E72 (S60 3.2) was tried by hand, with one and two records. Other S60 phones, large stores (the ids are
+  requested in batches of 20 — paging is unproven), a locked phone, an open PC Suite and writes are not verified. The
+  checks in CI cover the byte layout (against names recorded from PC Suite) and the parsers on synthetic data.
+* `SYMPORT_PCCS=0` switches the route off.
+
 **Drivers.** SymPort never installs, downloads or replaces drivers, never asks you to disable driver signature enforcement
 or Secure Boot, and never installs anything silently. If the Nokia driver is missing, the Doctor says so and points to the
 vendor/Microsoft route you run yourself (with your own UAC consent). Redistribution rights for Nokia drivers are not
