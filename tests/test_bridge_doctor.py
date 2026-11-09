@@ -510,3 +510,43 @@ def test_com_probing_skips_the_java_port_and_is_throttled(agent, monkeypatch):
     agent.at_failed.add("COM8")
     agent.com = {"COM8": "free"}
     assert agent.doctor_report()["phone"]["code"] == "com-silent", "a failed AT identify turns 'free' into 'silent'"
+
+
+def test_a_windows_11_mtp_phone_without_a_wpd_usb_row_is_still_recognised(monkeypatch):
+    """E72: the portable device sits under USB\\MS_COMP_MTP; the Nokia USB rows carry class 'USB', not 'WPD'."""
+    import types
+
+    from symport.bridge import discovery
+
+    monkeypatch.setattr(discovery, "os", types.SimpleNamespace(name="nt"))
+    seen = {}
+
+    def fake(script, request, timeout=150):
+        from symport.phone import wpd
+
+        seen["script"] = script
+        assert script == wpd.PROBE
+        return [{"index": 0, "storages": ["Phone memory", "Memory card", "x" * 400], "InstanceId": "USB\\MS_COMP_MTP\\9&1FE3119&0&00"}]
+
+    monkeypatch.setattr("symport.phone.wpd.run_powershell", fake)
+    portable, reason = discovery.portable_devices()
+    assert reason is None and portable[0]["index"] == 0 and set(portable[0]) == {"index", "storages"}, "only index + storage names"
+    assert len(portable[0]["storages"][2]) <= 255
+    nokia_usb = {"vid": "0421", "pid": "0223", "class": "USB", "status": "ok", "mi": None, "problem_code": None}
+    report = doctor.diagnose(host(usb=[nokia_usb], portable=portable), {}, 0, parts=[])
+    assert report["phone"]["code"] == "mtp-files"
+    assert {r["id"]: r["status"] for r in report["routes"]}["mtp-files"] == "ok"
+    assert "read-only" in next(r for r in report["routes"] if r["id"] == "mtp-files")["summary"][0]
+    text = doctor.export_text(report)
+    assert "MS_COMP_MTP" not in text and "9&1FE3119" not in text and "Memory card" not in text
+
+
+def test_a_locked_phone_is_connected_but_has_no_storage_not_invented_files():
+    nokia_usb = {"vid": "0421", "pid": "0223", "class": "USB", "status": "ok", "mi": None, "problem_code": None}
+    report = doctor.diagnose(host(usb=[nokia_usb], portable=[{"index": 0, "storages": []}]), {}, 0, parts=[])
+    assert report["phone"]["code"] == "mtp-only", "connected, nothing to read: not mtp-files and not a dead-end no-com"
+    mtp = next(r for r in report["routes"] if r["id"] == "mtp-files")
+    assert mtp["status"] == "warn" and "no readable storage" in mtp["summary"][0]
+    assert "Unlock the phone" in report["phone"]["action"][0] and "Разблокируйте телефон" in report["phone"]["action"][1]
+    # no portable device at all, and no WPD row either: unchanged
+    assert doctor.diagnose(host(usb=[nokia_usb]), {}, 0, parts=[])["phone"]["code"] == "no-com"

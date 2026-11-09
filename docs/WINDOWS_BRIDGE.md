@@ -125,7 +125,7 @@ It reads the safe report the running Bridge keeps current and shows **separate**
 | `no-usb` | Windows sees no Nokia on USB | data cable (not charge-only), unlock the phone, choose PC Suite, another port, close Nokia Suite |
 | `usb-driver-problem` | Nokia on USB, Device Manager reports a problem | open Device Manager (button); the Nokia PC Suite / Connectivity driver is needed — install it yourself from Nokia/Microsoft |
 | `mtp-files` | Windows lists the phone's storages as a Portable Device (MTP): files are readable (read-only); no contacts/calendar/SMS | open the SymPort file manager; for PIM install the Nokia driver yourself and choose PC Suite; for changing files choose Mass storage |
-| `mtp-only` | Windows shows the phone only as a media device (class WPD/MTP): no COM port, no drive letter — what a Nokia E72 reported on Windows 11 | for files choose Mass storage on the phone (SymPort does not read MTP yet); for contacts/calendar/SMS the Nokia PC Suite / Connectivity Cable driver must provide a COM port — install it yourself, choose PC Suite, replug |
+| `mtp-only` | Windows shows the phone as a media device (MTP) but no storage can be read yet (locked phone, wrong USB mode), no COM port, no drive letter — what a Nokia E72 reported on Windows 11 | for files choose Mass storage on the phone (SymPort does not read MTP yet); for contacts/calendar/SMS the Nokia PC Suite / Connectivity Cable driver must provide a COM port — install it yourself, choose PC Suite, replug |
 | `no-com` | driver fine, but no COM port | switch the phone to PC Suite (not Mass storage / Media transfer), replug |
 | `com-busy` | the Nokia COM port is held by another program | close Nokia Suite / Ovi Suite / terminals |
 | `com-silent` | the Nokia COM port opens and is free, but the phone gives no answer on it (the Gammu AT identify failed) | switch the phone off and on, reconnect the cable, choose PC Suite only after the phone has finished starting, try another cable/port; the action text also says what the DKU-2 probe returned |
@@ -155,6 +155,17 @@ The Doctor shows three routes side by side; none implies another, and a missing 
 | **Files over MTP** (Windows Portable Devices) | browse and download files, **read-only** | the phone shown by Windows as a portable device (`WPD`, e.g. Nokia E72 `0421:0223`); no Nokia driver, no COM port |
 | **Mass storage** (drive letter) | files and backups, including writes with the usual confirmations | “Mass storage” mode on the phone |
 | **PC Suite** (Gammu, COM or DKU-2) | identity, contacts, calendar, SMS — only what the capability matrix proves | the Nokia Connectivity Cable driver (installed by you) and “PC Suite” mode |
+
+**How the phone is recognised as a Nokia.** Windows lists a Portable Device in “This PC” with a Shell path. Two rules, either is
+enough: (1) the vendor id is in the path (`…usb#vid_0421&pid_xxxx#…`, older Windows); (2) Windows 11's generic MTP driver
+(`WUDFWpdMtp`) puts the device under `USB\MS_COMP_MTP\<id>` and its path (`…usb#ms_comp_mtp#<id>#{…}`) has **no VID** — then the
+`<id>` becomes the PnP instance `USB\MS_COMP_MTP\<ID>` (`#` → `\`, case-insensitive) and the item counts only if that device's
+**parent** (`DEVPKEY_Device_Parent`, a locale-independent property) is a Nokia USB device (`USB\VID_0421&PID_xxxx…`). The device
+is never recognised by its name (such as `S60 Handset`) or by `ms_comp_mtp` alone, so another vendor's MTP device is not
+offered, and if the parent cannot be determined nothing is offered. Items are sorted by path so the same `index` means the same
+device in the probe, listing and download. Instance ids, serial numbers and paths stay inside the PowerShell process: only the
+index and the storage names leave it. A phone that is locked (or in the wrong USB mode) is shown as “connected, but no storage”
+(`mtp-only`), never as files. **Not yet verified on a physical phone.**
 
 **MTP.** The Bridge uses the Windows shell's own Portable Device support to list storages (“Phone memory”, “Memory card”),
 browse folders and copy a file to a private temporary folder, which is read and deleted. It never replaces or intercepts a
