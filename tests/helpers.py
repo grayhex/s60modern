@@ -4,13 +4,34 @@ from __future__ import annotations
 import shutil
 import stat
 import struct
+import subprocess
 import sys
 from pathlib import Path
+
+try:  # POSIX only; Windows CI runs these tests without parallel workers and without the native compilers
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 from symport.analysis.e32 import header_crc
 from symport.sis.fields import uid_checksum
 
 REPO = Path(__file__).resolve().parent.parent
+
+
+def s60_tools(build: bool = False) -> bool:
+    """True when the native Nokia compilers (skc, bmconv) are complete.
+
+    build.sh recreates a shared scratch directory and creates skc before bmconv, so under pytest-xdist a worker that
+    merely checks `bin/skc` can see a half-built toolchain. Everything that touches the compilers goes through this
+    lock: a worker waits for a build in progress instead of racing it, and `build=True` builds when they are missing."""
+    skc, bmconv = REPO / "tools/s60/bin/skc", REPO / "tools/s60/bin/bmconv"
+    with (REPO / "tools/s60/.build.lock").open("w") as handle:
+        if fcntl:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        if build and not (skc.exists() and bmconv.exists()):
+            subprocess.run(["bash", str(REPO / "tools/s60/build.sh")], check=True, capture_output=True)
+        return skc.exists() and bmconv.exists()
 
 
 def make_e32(*, uid3: int = 0xE0001234, dll: bool = False, cpu: int = 0x2001, kernel_eka2: bool = True,

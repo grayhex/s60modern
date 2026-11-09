@@ -17,7 +17,7 @@ from symport.phone.models import presentation
 from symport.phone.registry import registry, selectable_profiles
 from symport.sis.reader import inspect
 from symport.theme.studio import ThemeStudio
-from tests.helpers import REPO, make_e32
+from tests.helpers import REPO, make_e32, s60_tools
 from tests.test_deps import sis
 
 
@@ -162,7 +162,7 @@ def test_catalog_migration_preserves_e52_and_does_not_verify_n95():
 
 @pytest.mark.parametrize("key", ["nokia-n95", "nokia-n95-8gb"])
 def test_real_fp1_theme_compiler_and_static_sis(tmp_path, key):
-    if not (REPO / "tools/s60/bin/skc").exists():
+    if not s60_tools():
         pytest.skip("Nokia resource compilers are built by theme CI and Docker")
     studio = ThemeStudio(tmp_path)
     project = studio.execute(

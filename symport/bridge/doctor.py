@@ -90,6 +90,23 @@ PHONE: dict[str, tuple[str, Text, Text | None]] = {
             "скрыто и не скачивает «драйверпаки». Работа с файлами может быть доступна в режиме «Накопитель».",
         ),
     ),
+    "mtp-only": (
+        WARN,
+        (
+            "Windows sees the phone as a media device (MTP / “Portable device”): no COM port and no drive letter.",
+            "Windows видит телефон как медиа-устройство (MTP / «Переносное устройство»): COM-порта и буквы диска нет.",
+        ),
+        (
+            "SymPort cannot read an MTP phone yet. For files choose “Mass storage” on the phone: the memory card then gets a "
+            "drive letter. For contacts, calendar and SMS the Nokia PC Suite / Nokia Connectivity Cable driver has to provide a "
+            "COM port: install it yourself (from Nokia/Microsoft), choose “PC Suite” and replug the cable. If the phone says "
+            "“PC Suite” but Windows shows only a portable device, that driver is most likely missing.",
+            "SymPort пока не читает телефон по MTP. Для файлов выберите на телефоне «Mass storage»: карта памяти получит букву "
+            "диска. Для контактов, календаря и SMS COM-порт должен дать драйвер Nokia PC Suite / Nokia Connectivity Cable: "
+            "установите его сами (у Nokia/Microsoft), выберите «PC Suite» и переподключите кабель. Если на телефоне выбран "
+            "«PC Suite», а Windows показывает только переносное устройство, скорее всего этого драйвера нет.",
+        ),
+    ),
     "no-com": (
         WARN,
         (
@@ -267,6 +284,10 @@ def classify_phone(host: dict, com: dict[str, str], identified: int) -> str:
         return "mass-storage-only"
     if usb and any(row.get("status") == "problem" for row in usb):
         return "usb-driver-problem"
+    if usb and any(str(row.get("class")).upper() == "WPD" for row in usb) and not any(
+        str(row.get("class")).lower() in ("ports", "modem") for row in usb
+    ):
+        return "mtp-only"
     if usb:
         return "no-com"
     if bluetooth:
@@ -295,11 +316,13 @@ def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | Non
     volumes = host.get("volumes") or []
     bluetooth = host.get("bluetooth") or []
     parts = components() if parts is None else parts
+    classes = ", ".join(sorted({str(row.get("class") or "?") for row in usb}))
     phone_code = classify_phone(host, com, identified)
     link_code = classify_link(relay)
     checks = [
         _check("usb", OK if usb else FAIL,
-               (f"Nokia on USB: {len(usb)}" if usb else "No Nokia on USB", f"Nokia по USB: {len(usb)}" if usb else "Nokia по USB нет")),
+               (f"Nokia on USB: {len(usb)} ({classes})" if usb else "No Nokia on USB",
+                f"Nokia по USB: {len(usb)} ({classes})" if usb else "Nokia по USB нет")),
         _check("driver", FAIL if problems else (OK if usb else INFO),
                ("USB driver reports a problem" if problems else "USB driver OK" if usb else "USB driver: nothing to check",
                 "Драйвер USB сообщает о проблеме" if problems else "Драйвер USB в порядке" if usb else "Драйвер USB: проверять нечего")),
@@ -320,6 +343,12 @@ def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | Non
                 f"Сопряжено по Bluetooth: {len(bluetooth)}" if bluetooth else "Сопряжённых по Bluetooth Nokia нет")),
     ]
     status, summary, action = PHONE[phone_code]
+    codes = sorted({row.get("problem_code") for row in problems if row.get("problem_code")})
+    if phone_code == "usb-driver-problem" and codes and action:
+        hint = {28: ("Windows reports error 28: no driver is installed for this device. ",
+                     "Windows сообщает ошибку 28: для устройства не установлен драйвер. ")}
+        extra = hint.get(codes[0], (f"Device Manager error code {codes[0]}. ", f"Код ошибки диспетчера устройств: {codes[0]}. "))
+        action = (extra[0] + action[0], extra[1] + action[1])
     link_status, link_summary, link_action = LINK[link_code]
     return {
         "schema": "symport.bridge-doctor/1",
@@ -328,7 +357,7 @@ def diagnose(host: dict, com: dict[str, str], identified: int, relay: dict | Non
         "frozen": bool(getattr(sys, "frozen", False)),
         "phone": {"code": phone_code, "status": status, "summary": list(summary), "action": list(action) if action else None},
         "checks": checks,
-        "usb": [{k: row.get(k) for k in ("vid", "pid", "class", "status")} for row in usb],
+        "usb": [{k: row.get(k) for k in ("vid", "pid", "class", "status", "mi", "problem_code")} for row in usb],
         "com": [{"state": state} for state in com.values()],
         "link": {
             "code": link_code,
@@ -359,7 +388,12 @@ def export_text(report: dict) -> str:
     ]
     lines += [f"  [{c['status']}] {c['id']}: {c['summary'][0]}" for c in report["checks"]]
     lines += ["", "Nokia USB devices (VID:PID class status):"]
-    lines += [f"  {u['vid']}:{u['pid']} {u['class']} {u['status']}" for u in report["usb"]] or ["  none"]
+    lines += [
+        f"  {u['vid']}:{u['pid']} {u['class']} {u['status']}"
+        + (f" interface {u['mi']}" if u.get("mi") else "")
+        + (f" Device Manager code {u['problem_code']}" if u.get("problem_code") else "")
+        for u in report["usb"]
+    ] or ["  none"]
     lines += ["", "Components:"]
     lines += [
         f"  [{'ok' if p['present'] else ('MISSING' if p['required'] else 'absent')}] {p['name']}"

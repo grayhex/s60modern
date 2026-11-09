@@ -25,6 +25,7 @@ CI проверяет логику, замороженный exe и закрыт
 | кабель только для зарядки | `no-usb` | |
 | Nokia видна, драйвер Nokia не установлен | `usb-driver-problem` | |
 | драйвер есть, режим Mass storage | `mass-storage-only` | |
+| режим «Media transfer»/MTP, нет COM и буквы диска (Nokia E72 / Windows 11 — наблюдалось) | `mtp-only` | |
 | драйвер есть, режим PC Suite, COM есть | `gammu-not-identified` → `ready` после ответа | |
 | COM занят Nokia Suite | `com-busy` | |
 | только сопряжение Bluetooth | `bluetooth-only` | |

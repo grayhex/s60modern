@@ -208,6 +208,14 @@ describe('first-connection wizard steps', () => {
     );
     expect(mode.code).toBe('wrong-usb-mode');
     expect(mode.fixes.join(' ')).toMatch(/PC Suite/);
+    // Real report: Nokia E72 on Windows 11 is one WPD (MTP) device — no COM port, no drive letter.
+    const mtp = step(
+      base({ host: host({ usb: [{ vid: '0421', pid: '0223', class: 'WPD', status: 'ok' }] }) }),
+      'usb',
+    );
+    expect(mtp.code).toBe('mtp-only');
+    expect(mtp.fixes.join(' ')).toMatch(/Mass Storage/);
+    expect(mtp.fixes.join(' ')).toMatch(/driver/);
     const driver = step(
       base({
         host: host({ usb: [{ vid: '0421', pid: '01a2', class: 'USB', status: 'problem' }] }),

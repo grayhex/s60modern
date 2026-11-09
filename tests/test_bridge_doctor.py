@@ -50,6 +50,31 @@ def test_each_failure_is_a_separate_status_with_its_own_action(snapshot, com, id
     assert doctor.diagnose(host(usb=[USB_OK]), {}, 0, parts=[])["phone"]["code"] != "ready"
 
 
+WPD = {"vid": "0421", "pid": "0223", "class": "WPD", "status": "ok", "mi": None, "problem_code": None}
+
+
+def test_an_mtp_phone_is_not_reported_as_a_missing_com_port():
+    """Real report (Nokia E72, Windows 11): one WPD device, no COM port, no drive letter, driver 'OK'."""
+    report = doctor.diagnose(host(usb=[WPD]), {}, 0, parts=[])
+    assert report["phone"]["code"] == "mtp-only"
+    english = report["phone"]["action"][0]
+    assert "Mass storage" in english and "COM port" in english and "driver" in english
+    assert "WPD" in doctor.export_text(report) and "(WPD)" in report["checks"][0]["summary"][0]
+    # a real serial interface next to it is a different situation
+    both = doctor.diagnose(host(usb=[WPD, {**WPD, "class": "Ports", "mi": "01"}]), {}, 0, parts=[])
+    assert both["phone"]["code"] == "no-com"
+    assert doctor.diagnose(host(usb=[WPD], volumes=[DRIVE]), {}, 0, parts=[])["phone"]["code"] == "mass-storage-only"
+
+
+def test_device_manager_error_code_is_explained_without_identifiers():
+    bad = {**USB_BAD, "class": "unknown", "mi": "00", "problem_code": 28}
+    report = doctor.diagnose(host(usb=[bad]), {}, 0, parts=[])
+    assert report["phone"]["code"] == "usb-driver-problem"
+    assert "error 28" in report["phone"]["action"][0] and "ошибку 28" in report["phone"]["action"][1]
+    text = doctor.export_text(report)
+    assert "interface 00" in text and "Device Manager code 28" in text
+
+
 def test_nas_link_states_and_tls_failures_stay_separate_from_usb():
     for reason in ("tls-untrusted", "tls-hostname", "tls-expired", "tls-error", "unreachable", "lease-expired",
                    "lease-missing", "bad-token", "rejected", "server-error"):
@@ -131,7 +156,8 @@ def test_snapshot_contains_only_the_safe_report(agent, monkeypatch):
     agent.write_snapshot()
     data = json.loads((agent.root / "diagnostics.json").read_text(encoding="utf-8"))
     assert data["phone"]["code"] == "usb-driver-problem" and "SECRET123" not in json.dumps(data)
-    assert data["usb"] == [{"vid": "0421", "pid": "0001", "class": "Ports", "status": "problem"}]
+    assert data["usb"] == [{"vid": "0421", "pid": "0001", "class": "Ports", "status": "problem", "mi": None,
+                            "problem_code": None}]
 
 
 def test_com_port_is_not_probed_while_the_phone_is_identified(agent, monkeypatch):

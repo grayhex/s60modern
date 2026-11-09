@@ -21,6 +21,7 @@ from symport.sis.reader import extract, inspect
 from symport.sis.writer import SisFile, SisPackage, build
 from symport.theme.studio import ThemeStudio
 from symport.web import Workbench
+from tests.helpers import s60_tools
 from tests.test_catalog import FixtureOpener, catalog_fixture, public_address, wait_job
 from tests.test_web import _http, http_server, repo  # noqa: F401
 
@@ -256,7 +257,7 @@ def png(width=48, height=48, color="#1595ab"):
 
 @pytest.fixture(scope="module")
 def compiled(tmp_path_factory):
-    if not (ROOT / "tools/s60/bin/skc").exists():
+    if not s60_tools():
         pytest.skip(
             "Native compiler integration runs in the theme/browser CI job after tools/s60/build.sh"
         )
