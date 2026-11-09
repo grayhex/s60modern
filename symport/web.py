@@ -858,7 +858,10 @@ def make_handler(state: Workbench):
             if self.path.startswith('/api/bridge-relay/'):
                 relay = state.bridge_relay
                 if not relay or not relay.authorized(self.headers.get('X-Symport-Relay-Key', '')):
-                    return self._json({'error': 'Bridge lease unavailable'}, 403)
+                    # A distinct, secret-free code lets the Bridge tell a revoked/expired lease from a wrong token.
+                    code = ('lease-missing' if not relay else
+                            'lease-expired' if relay.closed or time.monotonic() >= relay.expires else 'bad-token')
+                    return self._json({'error': 'Bridge lease unavailable', 'code': code}, 403)
                 try:
                     length = int(self.headers.get('Content-Length', '0'))
                     if self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length', [])) != 1 or not 0 < length <= 90 * 1024 * 1024:

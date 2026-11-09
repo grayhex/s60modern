@@ -89,7 +89,7 @@ Uninstall via *Settings → Apps* (asks whether to delete settings and the pairi
 
 Tray **Settings**: automatic Nokia USB discovery (default on), optional current-user
 Windows sign-in autostart (default off), Gammu configuration and connection-profile
-JSON. **Diagnostics** shows state/candidate counts. Operation logs contain action,
+JSON. **Diagnostics** opens the *Driver & Connection Doctor* (below). Operation logs contain action,
 time and status only. Settings/private backups live in `%LOCALAPPDATA%\SymPortBridge`.
 Full-volume backup jobs in the development tools still operate on volumes enrolled
 on the server. For Bridge use the existing selected-folder backup and PIM backups;
@@ -112,6 +112,47 @@ is an external optional dependency and is **not** bundled in the Windows build.
 An absent executable produces a connection diagnostic, not a supported capability.
 The Gammu wheel's supported transports depend on its actual build/driver and must
 be tested on the host; no universal Windows USB/Bluetooth compatibility is promised.
+
+## Driver & Connection Doctor (tray → Diagnostics)
+
+A native window that runs as its own process, so **OK/Close, Esc, Enter and the window's X always close it**, a second
+click never stacks a second window, and the tray menu, discovery and the SymPort link keep working while it is open.
+It reads the safe report the running Bridge keeps current and shows **separate** statuses, each with the exact next step
+(English/Russian by the Windows UI language):
+
+| Status | Meaning | What to do |
+|---|---|---|
+| `no-usb` | Windows sees no Nokia on USB | data cable (not charge-only), unlock the phone, choose PC Suite, another port, close Nokia Suite |
+| `usb-driver-problem` | Nokia on USB, Device Manager reports a problem | open Device Manager (button); the Nokia PC Suite / Connectivity driver is needed — install it yourself from Nokia/Microsoft |
+| `no-com` | driver fine, but no COM port | switch the phone to PC Suite (not Mass storage / Media transfer), replug |
+| `com-busy` | the Nokia COM port is held by another program | close Nokia Suite / Ovi Suite / terminals |
+| `gammu-not-identified` | free COM port, no answer from the phone | unlock, keep PC Suite, rescan; a model-specific profile may be needed |
+| `mass-storage-only` | only the drive is available | files and backups work; contacts/calendar/SMS need PC Suite + COM |
+| `bluetooth-only` | a paired Nokia, nothing on USB | connect USB or use a configured Bluetooth profile |
+| `ready` | a Nokia answered over its COM port | — |
+
+The SymPort link has its own, separate states: `not-paired`, `connecting`, `connected` (with “certificate pinned”),
+`tls-untrusted`, `tls-hostname` (certificate for another address), `tls-expired`, `tls-error`, `unreachable`,
+`lease-expired`, `lease-missing`, `bad-token`, `rejected`, `server-error` — a TLS problem is never reported as a USB problem.
+Buttons: **Rescan** (asks the running Bridge to look again at once), **Copy diagnostics**, **Open Device Manager**,
+**Pair / Help** (opens only the SymPort address this Bridge was paired with, or explains the steps; the Bridge never
+connects to a server on its own) and **Close**. New Nokia USB devices are noticed within about 10 seconds without pressing
+Rescan. A Windows PnP record alone is never shown as “Connected”.
+
+The copied text contains versions, VID:PID, statuses and counts only — no IMEI, USB serial numbers or PnP instance IDs,
+paths, addresses (the SymPort URL is reduced to its scheme), keys, tokens, contacts or SMS.
+
+**Drivers.** SymPort never installs, downloads or replaces drivers, never asks you to disable driver signature enforcement
+or Secure Boot, and never installs anything silently. If the Nokia driver is missing, the Doctor says so and points to the
+vendor/Microsoft route you run yourself (with your own UAC consent). Redistribution rights for Nokia drivers are not
+established, so none is bundled.
+
+**What the installer/exe contains** (checked by the exe's own `--self-test`, not by a Python on the build machine):
+pyserial, python-gammu/libGammu, Pillow, pystray, Tk, websockets and the Windows runtime pieces they need. Nothing else has
+to be installed for ordinary work: no Python, pip, Gammu or Visual C++ runtime. `cryptography` is deliberately **not** in
+the exe: certificate pinning, update-signature verification and the Doctor use only the standard library. Settings, the
+DPAPI-protected Bridge key and pinned certificates live in `%LOCALAPPDATA%\SymPortBridge` and survive updates.
+Real-hardware verification steps: [BRIDGE_HARDWARE_CHECKLIST.md](BRIDGE_HARDWARE_CHECKLIST.md).
 
 ## API and security
 

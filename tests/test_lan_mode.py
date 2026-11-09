@@ -382,3 +382,23 @@ def test_localhost_mode_is_unchanged(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_relay_refusals_carry_distinct_secret_free_codes(lan):
+    state, port = lan
+    origin = {"Origin": f"http://{NAS}:{port}"}
+
+    def refused(key):
+        status, data, _ = call(port, "POST", "/api/bridge-relay/result", {}, {"X-Symport-Relay-Key": key, **origin})
+        return status, json.loads(data)["code"]
+
+    assert refused("x" * 40) == (403, "lease-missing")              # nothing was ever opened
+    _, data, cookies = sign_in(port)
+    headers = session_headers(port, cookies, json.loads(data)["csrf"])
+    token = json.loads(call(port, "POST", "/api/connection", {"action": "enable"}, headers)[1])["relay_token"]
+    assert refused("y" * 40) == (403, "bad-token")                  # a lease exists, this is not its token
+    assert call(port, "POST", "/api/connection", {"action": "disconnect"}, headers)[0] == 200
+    assert refused(token) == (403, "lease-missing")                 # revoked from SymPort
+    token = json.loads(call(port, "POST", "/api/connection", {"action": "enable"}, headers)[1])["relay_token"]
+    state.bridge_relay.expires = 0                                  # the two hours are over
+    assert refused(token) == (403, "lease-expired")
