@@ -166,7 +166,7 @@ def test_untrusted_certificate_is_reported_and_pinning_fixes_it(stack):
         if report and report["state"] == "error":
             break
         time.sleep(0.3)
-    assert report == {"state": "error", "reason": "tls-untrusted"}
+    assert report == {"state": "error", "reason": "tls-untrusted", "pinned": False}
     assert bridge_post(agent, "https://other.example", {"origin": "https://other.example", "relay_status": True})[1]["relay"] is None
 
     # Pairing again with the announced fingerprint connects.
@@ -180,4 +180,4 @@ def test_untrusted_certificate_is_reported_and_pinning_fixes_it(stack):
         if report and report["state"] == "connected":
             break
         time.sleep(0.3)
-    assert report == {"state": "connected", "reason": None}
+    assert report == {"state": "connected", "reason": None, "pinned": True}

@@ -17,10 +17,25 @@ from symport.phone import DeviceManager, gammu_native
 from symport.phone.connections import load_profiles
 from symport.phone.local import LocalTransports
 
-from . import VERSION
-from .discovery import documented_model, serial_candidates, windows_nokia_volumes
+from . import VERSION, doctor
+from .discovery import (
+    documented_model,
+    host_candidates,
+    serial_candidates,
+    usb_devices,
+    windows_nokia_volumes,
+)
 from .server import BridgeServer
 from .settings import data_directory, load_config, load_key
+
+
+def pem_fingerprint(pem: str) -> str:
+    """SHA-256 of the DER form of a single PEM certificate (what SymPort announces); stdlib only."""
+    import ssl
+
+    if pem.count("-----BEGIN CERTIFICATE-----") != 1:
+        raise ValueError("Expected exactly one certificate")
+    return hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem.strip())).hexdigest()
 
 
 class Agent:
@@ -33,7 +48,13 @@ class Agent:
         self.config = load_config(root)
         self.stop = threading.Event()
         self.last_refresh = None
-        self.status = {"state": "starting", "connected": 0, "candidates": 0, "diagnostics": []}
+        self.status = {"state": "starting", "connected": 0, "identified": 0, "candidates": 0, "usb_seen": 0,
+                       "diagnostics": []}
+        self.host: dict | None = None  # last host_candidates() snapshot (USB/COM/drives/Bluetooth), never phone data
+        self.host_at = 0.0
+        self._usb_at = 0.0
+        self._usb_signature = None
+        self.com: dict[str, str] = {}
         self._signature = None
         self._ports = None
         self._auto_profiles = []
@@ -93,12 +114,10 @@ class Agent:
 
     def pin_ca(self, origin, fingerprint):
         """Fetch SymPort's public CA from the origin the operator just approved and keep it only if it has exactly
-        the fingerprint the web page announced. Verification against it replaces installing it in Windows."""
+        the fingerprint the web page announced. Verification against it replaces installing it in Windows.
+        Standard library only: the frozen exe is built without `cryptography`."""
         import ssl
         from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
-
-        from cryptography import x509
-        from cryptography.hazmat.primitives import hashes, serialization
 
         from .relay import is_local_network
 
@@ -110,18 +129,16 @@ class Agent:
         if is_local_network(urlsplit(origin).hostname or ""):
             handlers.append(ProxyHandler({}))
         with build_opener(*handlers).open(Request(origin + "/symport-ca.crt"), timeout=15) as reply:
-            pem = reply.read(16385)
-        if len(pem) > 16384:
+            raw = reply.read(16385)
+        if len(raw) > 16384:
             raise ValueError("Unexpected certificate size")
-        certificate = x509.load_pem_x509_certificate(pem)
-        digest = certificate.fingerprint(hashes.SHA256()).hex()
-        constraints = certificate.extensions.get_extension_for_class(x509.BasicConstraints).value
-        if digest != fingerprint or not constraints.ca:
+        digest = pem_fingerprint(raw.decode("ascii"))
+        if digest != fingerprint:
             raise ValueError("The certificate does not match the fingerprint shown by SymPort")
         target = self.root / "trusted-ca"
         target.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = target / (digest + ".pem")
-        path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+        path.write_text(raw.decode("ascii"), encoding="ascii")
         return path
 
     def pair(self, origin, token, ca_sha256=None):
@@ -225,22 +242,94 @@ class Agent:
         self.status["diagnostics"] = [r for r in (reason, disk_reason) if r]
         self.refresh_config()
 
+    # ---- Driver & Connection Doctor support -------------------------------------------------------------------
+    def _rescan_requested(self) -> bool:
+        marker = self.root / "rescan.request"
+        try:
+            marker.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+
+    @staticmethod
+    def _usb_key(rows):
+        return sorted((r["vid"], r["pid"], r["class"], r["status"]) for r in rows)
+
+    def refresh_host(self, force=False) -> bool:
+        """Keep a recent view of what Windows sees. USB is polled every 10 s (hotplug), everything else every 60 s or on
+        demand. Returns True when the set of Nokia USB devices changed."""
+        now = time.monotonic()
+        changed = False
+        if force or self.host is None or now - self.host_at >= 60:
+            self.host, self.host_at, self._usb_at = host_candidates(), now, now
+            key = self._usb_key(self.host["usb"])
+            changed = self._usb_signature is not None and key != self._usb_signature
+            self._usb_signature = key
+        elif now - self._usb_at >= 10:
+            usb, _ = usb_devices()
+            self._usb_at = now
+            key = self._usb_key(usb)
+            changed = key != self._usb_signature
+            self._usb_signature = key
+            self.host["usb"] = usb
+        self.status["usb_seen"] = len(self.host["usb"])
+        # Probe COM ports only while nothing is identified and no phone operation holds the manager.
+        if self.status.get("identified", 0) == 0 and self.manager.lock.acquire(blocking=False):
+            try:
+                self.com = {p["port"]: doctor.com_state(p["port"]) for p in self.host["serial"]}
+            finally:
+                self.manager.lock.release()
+        elif self.status.get("identified", 0) > 0:
+            self.com = {}
+        return changed
+
+    def doctor_report(self) -> dict:
+        relay = self.relay.public_state() if self.relay else None
+        origin = self.relay.origin if self.relay else None
+        return doctor.diagnose(self.host or {}, self.com, int(self.status.get("identified", 0)), relay, origin)
+
+    def write_snapshot(self) -> None:
+        """The diagnostics window (a separate process) reads this file; it contains only the safe report."""
+        target = self.root / "diagnostics.json"
+        temporary = self.root / "diagnostics.tmp"
+        try:
+            with temporary.open("w", encoding="utf-8") as file:
+                os.chmod(temporary, 0o600)
+                json.dump(self.doctor_report(), file, ensure_ascii=False)
+            temporary.replace(target)
+        except OSError:
+            pass
+
     def monitor(self):
         while not self.stop.is_set():
             try:
+                forced = self._rescan_requested()
+                if forced:
+                    self._last_scan, self._ports, self.last_refresh = 0, None, None
                 if self.auto:
                     self.scan()
                 else:
                     self.refresh_config()
                 if self.last_refresh is None or time.monotonic() - self.last_refresh >= 30:
                     data = self.manager.execute({"action": "discover"})
+                    devices = data["devices"]
                     self.status.update(
                         state="ready",
-                        connected=sum(d.get("connected") is True for d in data["devices"]),
+                        connected=sum(d.get("connected") is True for d in devices),
+                        identified=sum(
+                            d.get("connected") is True and d.get("transport") != "mounted-volume" and bool(d.get("model"))
+                            for d in devices
+                        ),
                     )
                     self.last_refresh = time.monotonic()
+                if self.refresh_host(forced):
+                    # A Nokia was plugged in or removed: look again at once instead of waiting for the next cycle.
+                    self._last_scan, self._ports, self.last_refresh = 0, None, None
             except (ValueError, OSError):
                 self.status.update(state="connection-error", connected=0)
+            self.write_snapshot()
             self.stop.wait(3)
 
     def start(self):
@@ -269,6 +358,29 @@ class Agent:
         for relay in self._relays:
             relay.stop.set()
             relay.thread.join()
+
+
+# A public, test-only CA certificate (never used for a real server): lets the frozen exe prove, without `cryptography`,
+# that it can fingerprint a PEM certificate and load it as the only trusted CA for the SymPort relay.
+SELF_TEST_CA = """-----BEGIN CERTIFICATE-----
+MIICsTCCAlegAwIBAgIUahAo54thfSVj0XII5fgT8ttQna4wCgYIKoZIzj0EAwIw
+LTEQMA4GA1UECgwHU3ltUG9ydDEZMBcGA1UEAwwQU3ltUG9ydCBMb2NhbCBDQTAe
+Fw0yNjExMDgwODU0MzBaFw0zNjExMDYwODU0MzBaMC0xEDAOBgNVBAoMB1N5bVBv
+cnQxGTAXBgNVBAMMEFN5bVBvcnQgTG9jYWwgQ0EwWTATBgcqhkjOPQIBBggqhkjO
+PQMBBwNCAARzPA4EyjGV6DA29kpgvSEJlljVhR5P2PzqlrBlWRvy6KOeKFvmBJX0
+iUM8anEtPQPHcxfSht1PWa8Cbfnvo+Xfo4IBUzCCAU8wEgYDVR0TAQH/BAgwBgEB
+/wIBADAOBgNVHQ8BAf8EBAMCAYYwggEIBgNVHR4BAf8Egf0wgfqggfcwCocICgAA
+AP8AAAAwCocIrBAAAP/wAAAwCocIwKgAAP//AAAwCocIfwAAAP8AAAAwCocIZEAA
+AP/AAAAwCocIqf4AAP//AAAwIocg/AAAAAAAAAAAAAAAAAAAAP4AAAAAAAAAAAAA
+AAAAAAAwIocg/oAAAAAAAAAAAAAAAAAAAP/AAAAAAAAAAAAAAAAAAAAwIocgAAAA
+AAAAAAAAAAAAAAAAAf////////////////////8wB4IFLmhvbWUwDIIKLmhvbWUu
+YXJwYTALggkuaW50ZXJuYWwwBoIELmxhbjAIggYubG9jYWwwC4IJbG9jYWxob3N0
+MB0GA1UdDgQWBBRxNRT4qIXsHulw7DAOJn71JRMKQzAKBggqhkjOPQQDAgNIADBF
+AiEAtHqlSP7Dv1Std7ikWtVWEvCV8EvA2qruuzRLm/m4V0oCIDCqd8oxzMK6nxzy
+bQB3B59H0vDcjTrLZOBFNPXbRtPf
+-----END CERTIFICATE-----
+"""
+SELF_TEST_CA_SHA256 = "0e8dad2f5f8258d7b3c504dfccfb45374dac439d292262b2340e81b2e8a9ee23"
 
 
 def self_test(report: Path | None):
@@ -376,7 +488,21 @@ def self_test(report: Path | None):
                     assert icon.title == "SymPort self-test"
                 assert tkinter.Tcl().eval("info patchlevel")
                 native_ui = "dependencies-loaded"
+            # Components the installer promises, as found inside this very build; CA pinning without `cryptography`.
+            import ssl as _ssl
+
+            parts = doctor.components()
+            missing = [p["name"] for p in parts if p["required"] and not p["present"]]
+            if getattr(sys, "frozen", False) and os.name == "nt":
+                assert not missing, "The build is missing required components: " + ", ".join(missing)
+            assert pem_fingerprint(SELF_TEST_CA) == SELF_TEST_CA_SHA256
+            _ssl.create_default_context().load_verify_locations(cadata=SELF_TEST_CA)
+            sample = doctor.diagnose({"usb": [{"vid": "0421", "pid": "0001", "class": "USB", "status": "problem"}]}, {}, 0)
+            assert sample["phone"]["code"] == "usb-driver-problem" and "serial number" not in doctor.export_text(sample).lower()
             result = {
+                "components": {p["name"]: p["present"] for p in parts},
+                "ca_pinning": "passed",
+                "doctor": "passed",
                 "native_ui": native_ui,
                 "sis_file_roundtrip": "passed",
                 "schema": "symport.bridge.self-test/1",
@@ -423,10 +549,15 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=24652)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--settings", action="store_true", help="open the settings window (used by the tray)")
+    parser.add_argument("--diagnostics", action="store_true", help="open the diagnostics window (used by the tray)")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test(args.report)
+    if args.diagnostics:
+        from .tray import diagnostics_window
+
+        return diagnostics_window((args.data_dir or data_directory()).absolute(), args.port)
     if args.settings:
         from .tray import settings_window
 

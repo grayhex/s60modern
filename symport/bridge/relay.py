@@ -59,13 +59,22 @@ def is_local_network(host: str) -> bool:
         return host == "localhost" or host.endswith((".local", ".lan", ".home.arpa", ".home", ".internal"))
 
 
+LEASE_CODES = ("lease-missing", "lease-expired", "bad-token")
+
+
 def classify(error: BaseException) -> str:
-    """A short, secret-free reason the operator can act on."""
+    """A short, secret-free reason the operator can act on. TLS, network and lease problems stay distinct."""
     if isinstance(error, HTTPError):
-        return "rejected" if error.code in (401, 403) else "server-error"
+        if error.code in (401, 403):
+            try:
+                code = json.loads(error.read(2048)).get("code")
+            except (ValueError, OSError, AttributeError):
+                code = None
+            return code if code in LEASE_CODES else "rejected"
+        return "server-error"
     reason = error.reason if isinstance(error, URLError) else error
     if isinstance(reason, ssl.SSLCertVerificationError):
-        return "tls-untrusted"
+        return {62: "tls-hostname", 10: "tls-expired"}.get(getattr(reason, "verify_code", None), "tls-untrusted")
     if isinstance(reason, ssl.SSLError):
         return "tls-error"
     return "unreachable"
@@ -77,6 +86,7 @@ class OutboundRelay:
         self.stop = threading.Event()
         # state: connecting → connected | error. `reason` is one of classify() and carries no URL or secret.
         self.state, self.reason, self.changed = "connecting", None, time.monotonic()
+        self.pinned = ca_file is not None  # verification uses the CA the operator approved at pairing
         handlers = [NoRedirect()]
         host = urlsplit(self.origin).hostname or ""
         if is_local_network(host):
@@ -108,7 +118,7 @@ class OutboundRelay:
             self.state, self.reason, self.changed = state, reason, time.monotonic()
 
     def public_state(self):
-        return {"state": self.state, "reason": self.reason}
+        return {"state": self.state, "reason": self.reason, "pinned": self.pinned}
 
     def run(self):
         while not self.stop.is_set() and not self.agent.stop.is_set():

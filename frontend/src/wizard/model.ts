@@ -85,6 +85,36 @@ function relayFailure(reason: string | null, title: [string, string], make: Make
         'ПК не может подключиться к SymPort по этому адресу и порту. Проверьте сеть, адрес NAS и брандмауэр Windows.',
       ],
     ],
+    'tls-hostname': [
+      [
+        'The SymPort certificate was issued for another address. Restart SymPort (it reissues the certificate for its current address) and request access again from the address in its log.',
+        'Сертификат SymPort выпущен на другой адрес. Перезапустите SymPort (он выпустит сертификат на текущий адрес) и запросите доступ заново с адреса из его журнала.',
+      ],
+    ],
+    'tls-expired': [
+      [
+        'The SymPort certificate has expired. Restart SymPort to renew it and check the date and time on the PC and the NAS.',
+        'Срок сертификата SymPort истёк. Перезапустите SymPort, чтобы он обновился, и проверьте дату и время на ПК и NAS.',
+      ],
+    ],
+    'lease-expired': [
+      [
+        'The access lease expired or was revoked. Request access again (it lasts two hours and ends when SymPort restarts).',
+        'Срок доступа истёк или он отозван. Запросите доступ снова (он действует два часа и сбрасывается при перезапуске SymPort).',
+      ],
+    ],
+    'lease-missing': [
+      [
+        'SymPort has no lease for this Bridge (it was restarted or the lease was closed). Request access again.',
+        'У SymPort нет доступа для этого Bridge (он перезапущен или доступ закрыт). Запросите доступ снова.',
+      ],
+    ],
+    'bad-token': [
+      [
+        'SymPort rejected the token: a newer request replaced this one. Request access once more and approve only the latest dialog.',
+        'SymPort отклонил токен: его заменил более новый запрос. Запросите доступ ещё раз и подтверждайте только последнее окно.',
+      ],
+    ],
     rejected: [
       [
         'SymPort refused the access lease. Request access again.',

@@ -41,14 +41,22 @@ SETTINGS_SAVED = 0
 SETTINGS_CLOSED = 10
 
 
-def settings_command(root: Path, port: int) -> list[str]:
-    """The settings window runs in its own process: Tk owns that process' main thread, so the window can
-    always be closed and never shares an event loop with the tray icon."""
+def _window_command(flag: str, root: Path, port: int) -> list[str]:
     if getattr(sys, "frozen", False):
         base = [sys.executable]
     else:
         base = [sys.executable, "-m", "symport.bridge.main"]
-    return [*base, "--settings", "--data-dir", str(root), "--port", str(port)]
+    return [*base, flag, "--data-dir", str(root), "--port", str(port)]
+
+
+def settings_command(root: Path, port: int) -> list[str]:
+    """The settings window runs in its own process: Tk owns that process' main thread, so the window can
+    always be closed and never shares an event loop with the tray icon."""
+    return _window_command("--settings", root, port)
+
+
+def diagnostics_command(root: Path, port: int) -> list[str]:
+    return _window_command("--diagnostics", root, port)
 
 
 def settings_window(root_dir: Path, port: int) -> int:
@@ -153,6 +161,136 @@ def settings_window(root_dir: Path, port: int) -> int:
     return result
 
 
+def diagnostics_window(root_dir: Path, port: int) -> int:
+    """Blocking Tk diagnostics window (own process). OK/Close, Esc, Enter and the window's X all close it.
+
+    It only reads `diagnostics.json` (the safe report the running Bridge keeps current) and asks the Bridge to rescan by
+    creating `rescan.request`; it never touches the phone itself."""
+    import json
+    import subprocess
+    import webbrowser
+    from tkinter import Text, Tk, messagebox, ttk
+
+    from . import doctor
+
+    russian = doctor.windows_language_is_russian()
+
+    def t(en, ru):
+        return ru if russian else en
+
+    snapshot = root_dir / "diagnostics.json"
+    root = Tk()
+    root.title(t("SymPort Bridge — diagnostics", "SymPort Bridge — диагностика") + " " + VERSION)
+    root.minsize(640, 520)
+    frame = ttk.Frame(root, padding=14)
+    frame.pack(fill="both", expand=True)
+    frame.columnconfigure(0, weight=1)
+
+    phone_head = ttk.Label(frame, font=("Segoe UI", 11, "bold"), wraplength=600, justify="left")
+    phone_head.grid(row=0, column=0, sticky="w")
+    phone_hint = ttk.Label(frame, wraplength=600, justify="left")
+    phone_hint.grid(row=1, column=0, sticky="w", pady=(2, 10))
+    link_head = ttk.Label(frame, font=("Segoe UI", 10, "bold"), wraplength=600, justify="left")
+    link_head.grid(row=2, column=0, sticky="w")
+    link_hint = ttk.Label(frame, wraplength=600, justify="left")
+    link_hint.grid(row=3, column=0, sticky="w", pady=(2, 10))
+    rows = Text(frame, height=14, width=76, wrap="word", state="disabled", relief="solid", borderwidth=1)
+    rows.grid(row=4, column=0, sticky="nsew")
+    frame.rowconfigure(4, weight=1)
+    state = {"report": None, "mtime": 0.0}
+
+    def refresh():
+        try:
+            mtime = snapshot.stat().st_mtime
+            if mtime != state["mtime"]:
+                state["report"] = json.loads(snapshot.read_text(encoding="utf-8"))
+                state["mtime"] = mtime
+                show(state["report"])
+        except (OSError, ValueError):
+            pass
+        root.after(1500, refresh)
+
+    def show(report):
+        model = doctor.window_model(report, russian)
+        phone_head.config(text=f"{model['phone_mark']}  {model['phone_summary']}")
+        phone_hint.config(text=model["phone_action"])
+        link_head.config(text=f"{model['link_mark']}  SymPort: {model['link_summary']}" + (f" — {model['link_origin']}" if model["link_origin"] else ""))
+        link_hint.config(text=model["link_action"])
+        rows.config(state="normal")
+        rows.delete("1.0", "end")
+        for mark, text in model["rows"]:
+            rows.insert("end", f" {mark}  {text}\n")
+        rows.config(state="disabled")
+
+    def rescan():
+        try:
+            (root_dir / "rescan.request").write_text("1", encoding="ascii")
+        except OSError:
+            messagebox.showerror("SymPort Bridge", t("Could not ask the Bridge to rescan.", "Не удалось запросить повторный поиск."), parent=root)
+
+    def copy():
+        if state["report"] is None:
+            return
+        root.clipboard_clear()
+        root.clipboard_append(doctor.export_text(state["report"]))
+        root.update()
+        messagebox.showinfo(
+            "SymPort Bridge",
+            t("Copied. The text has no serial numbers, IMEI, paths, addresses or keys.",
+              "Скопировано. В тексте нет серийных номеров, IMEI, путей, адресов и ключей."),
+            parent=root,
+        )
+
+    def device_manager():
+        if os.name == "nt":
+            try:
+                subprocess.Popen(["mmc.exe", "devmgmt.msc"])
+                return
+            except OSError:
+                pass
+        messagebox.showinfo("SymPort Bridge", t("Open Device Manager from the Windows Start menu.", "Откройте «Диспетчер устройств» из меню «Пуск»."), parent=root)
+
+    def pair_help():
+        report = state["report"]
+        origin = report["link"].get("origin") if report else None
+        if origin and origin.startswith(("https://", "http://127.0.0.1", "http://localhost")):
+            webbrowser.open(origin + "/#phone/connection")  # only the server this Bridge was paired with
+        else:
+            messagebox.showinfo(
+                "SymPort Bridge",
+                t("Open SymPort in your browser → Connection → “Request access”, then approve the dialog on this PC. "
+                  "The Bridge never connects to a server on its own.",
+                  "Откройте SymPort в браузере → Подключение → «Запросить доступ» и подтвердите окно на этом ПК. "
+                  "Bridge сам никогда не подключается к серверу."),
+                parent=root,
+            )
+
+    buttons = ttk.Frame(frame)
+    buttons.grid(row=5, column=0, sticky="ew", pady=(10, 0))
+    for index, (label, command) in enumerate(
+        [
+            (t("Rescan", "Повторить поиск"), rescan),
+            (t("Copy diagnostics", "Копировать диагностику"), copy),
+            (t("Open Device Manager", "Диспетчер устройств"), device_manager),
+            (t("Pair / Help", "Подключить / Помощь"), pair_help),
+        ]
+    ):
+        ttk.Button(buttons, text=label, command=command).grid(row=0, column=index, padx=(0, 8))
+    close = ttk.Button(buttons, text=t("Close", "Закрыть"), command=root.destroy, default="active")
+    buttons.columnconfigure(4, weight=1)
+    close.grid(row=0, column=5, sticky="e")
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    root.bind("<Return>", lambda _event: root.destroy())
+    root.bind("<Escape>", lambda _event: root.destroy())
+    root.attributes("-topmost", True)
+    root.after(400, lambda: root.attributes("-topmost", False))
+    root.lift()
+    close.focus_set()
+    refresh()
+    root.mainloop()
+    return SETTINGS_CLOSED
+
+
 RELAY_HINTS = {
     "tls-untrusted": "this PC does not trust the SymPort certificate. Pair again from SymPort (the Bridge then pins it), "
                      "or install the certificate from the SymPort login page.",
@@ -198,27 +336,15 @@ def run_tray(agent, key):
 
         threading.Thread(target=apply, daemon=True, name="bridge-settings").start()
 
-    def diagnostics():
-        import ctypes
+    diagnostics_process: list[subprocess.Popen] = []
 
-        status = agent.status
-        text = (
-            "Version "
-            + VERSION
-            + "\nState: "
-            + str(status["state"])
-            + "\nConnected: "
-            + str(status["connected"])
-            + "\nNokia candidates: "
-            + str(status["candidates"])
-            + "\nSymPort link: "
-            + relay_summary(agent)
-            + "\n\n"
-            + "\n".join(status.get("diagnostics", []))
-            + "\n\nOperation logs contain action/status only. Settings and private backups: "
-            + str(agent.root)
-        )
-        ctypes.windll.user32.MessageBoxW(None, text, "SymPort Bridge diagnostics", 0x40)
+    def diagnostics():
+        # A native window in its own process: the tray menu and the Bridge keep running while it is open, and a
+        # second click never stacks another window.
+        if diagnostics_process and diagnostics_process[0].poll() is None:
+            return
+        agent.write_snapshot()
+        diagnostics_process[:] = [subprocess.Popen(diagnostics_command(agent.root, agent.server.server_port))]
 
     def logs():
         path = agent.manager.journal
@@ -228,7 +354,7 @@ def run_tray(agent, key):
             diagnostics()
 
     def quit_app(icon, item):
-        for process in settings_process:
+        for process in [*settings_process, *diagnostics_process]:
             if process.poll() is None:
                 process.terminate()
         icon.stop()

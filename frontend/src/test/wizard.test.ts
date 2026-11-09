@@ -143,6 +143,17 @@ describe('first-connection wizard steps', () => {
     expect(pairing.status).toBe('failed');
     expect(pairing.code).toBe('relay-tls-untrusted');
     expect(pairing.fixes.length).toBeGreaterThan(0);
+    for (const reason of [
+      'tls-hostname',
+      'tls-expired',
+      'lease-expired',
+      'lease-missing',
+      'bad-token',
+    ]) {
+      const found = step({ ...input, bridgeRelay: { state: 'error', reason } }, 'pairing');
+      expect(found.code).toBe(`relay-${reason}`);
+      expect(found.fixes.length).toBeGreaterThan(0);
+    }
     const waiting = step(
       { ...input, bridgeRelay: { state: 'connecting', reason: null } },
       'pairing',

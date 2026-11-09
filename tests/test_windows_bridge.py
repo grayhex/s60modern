@@ -252,10 +252,28 @@ def test_relay_failures_are_classified_without_leaking_details():
 
     from symport.bridge.relay import classify, is_local_network
 
+    def verify_error(code):
+        error = ssl.SSLCertVerificationError("verify failed")
+        error.verify_code = code
+        return URLError(error)
+
+    assert classify(verify_error(18)) == "tls-untrusted"
     assert classify(URLError(ssl.SSLCertVerificationError("self-signed"))) == "tls-untrusted"
+    assert classify(verify_error(62)) == "tls-hostname"
+    assert classify(verify_error(10)) == "tls-expired"
     assert classify(URLError(ssl.SSLError("handshake"))) == "tls-error"
     assert classify(URLError(ConnectionRefusedError())) == "unreachable"
+    import io
+
+    def refused(code):
+        body = io.BytesIO(json.dumps({"error": "x", "code": code}).encode())
+        return HTTPError("https://x", 403, "no", {}, body)
+
     assert classify(HTTPError("https://x", 403, "no", {}, None)) == "rejected"
+    assert classify(refused("lease-expired")) == "lease-expired"
+    assert classify(refused("bad-token")) == "bad-token"
+    assert classify(refused("lease-missing")) == "lease-missing"
+    assert classify(refused("something-else")) == "rejected"
     assert classify(HTTPError("https://x", 500, "no", {}, None)) == "server-error"
     assert all(is_local_network(h) for h in ("192.168.1.5", "10.0.0.2", "127.0.0.1", "nas.home.arpa", "localhost"))
     assert not any(is_local_network(h) for h in ("symport.example.org", "8.8.8.8"))
